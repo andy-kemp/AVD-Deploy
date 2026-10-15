@@ -1,0 +1,23 @@
+/* Same look as the local wizard (web/index.html). */
+:root { --accent: #0f6cbd; --bg: #f5f7fa; --card: #fff; --text: #1b1b1b; --muted: #5c6670; --warn: #8a5a00; --warn-bg: #fff4ce; --err: #a4262c; --ok: #107c10; }
+* { box-sizing: border-box; }
+body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); }
+header { background: var(--accent); color: #fff; padding: 14px 24px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+header .who { font-size: 13px; opacity: .9; }
+main { max-width: 920px; margin: 20px auto 60px; padding: 0 16px; }
+section { background: var(--card); border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08); padding: 18px 22px; margin-bottom: 16px; }
+section h2 { font-size: 16px; margin: 0 0 12px; }
+.hint { font-size: 13px; color: var(--muted); }
+button { background: var(--accent); color: #fff; border: 0; border-radius: 4px; padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+button.link { background: none; color: #fff; padding: 0 0 0 10px; text-decoration: underline; font-weight: normal; }
+.note { font-size: 13px; padding: 8px 10px; border-radius: 4px; margin-top: 8px; }
+.note.warn { background: var(--warn-bg); color: var(--warn); }
+.note.err { background: #fde7e9; color: var(--err); }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e3e7ec; }
+th { color: var(--muted); font-weight: 600; }
+.mono { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; }
+.pill { display: inline-block; padding: 2px 8px; border-radius: 10px; background: #e3e7ec; font-size: 12px; }
+.pill.ok { background: #dff6dd; color: var(--ok); }

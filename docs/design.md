@@ -1,6 +1,6 @@
 # Design overview
 
-Status: agreed design; Phase 1 CLI with Azure Preview/Deploy ready for a first sandbox run ([runbook](sandbox-test.md)). No portal is implemented. Updated: 2026-10-14.
+Status: agreed design; Phase 1 CLI with Azure Preview/Deploy ready for a first sandbox run ([runbook](sandbox-test.md)). Portal MVP: Entra sign-in and subscription discovery ([portal](../portal/README.md)). Updated: 2026-10-15.
 
 Customers install this portal into **their own Azure subscription and Entra tenant**, from this repository using Bicep and one bootstrap script. The author's instance is simply the first installation. There is no central service, cross-tenant access or vendor standing access. Future SaaS must receive a separate design; MVP contracts only keep the target tenant explicit.
 
@@ -21,6 +21,7 @@ Customers install this portal into **their own Azure subscription and Entra tena
 - [ADR 0013](adr/0013-foundation-stage.md): subscription selection and Azure discovery in `New`, plus the foundation stage that creates the resource group, network with NAT, Key Vault with generated password, and deployment identity ([discovery module](../lib/AvdDiscovery.psm1), [foundation Bicep](../infra/avd/foundation.bicep)).
 - [ADR 0014](adr/0014-local-web-wizard.md): `-Mode Web`, a local browser wizard with dropdowns and a group picker that writes the same configuration ([page](../web/index.html)).
 - [ADR 0015](adr/0015-post-deploy-configuration.md): display names users see, FSLogix sign-in protection, and `-Mode PostDeploy` for the Entra RDP setting, storage app consent/tag/private-link names, Conditional Access exclusion and FSLogix folder permissions ([post-deploy module](../lib/AvdPostDeploy.psm1)).
+- [ADR 0017](adr/0017-portal-mvp-browser-discovery.md): portal MVP with single-tenant Entra sign-in (MSAL) and browser-direct ARM discovery; Preview and Deploy stay in the CLI ([portal](../portal/README.md)).
 
 ## Phase 1 local CLI
 
