@@ -19,6 +19,9 @@ param(
     # New: use this VM size instead of the persona recommendation (for example when the recommended size is restricted in the region).
     [ValidatePattern('^Standard_[A-Za-z0-9_]{1,55}$')]
     [string]$VmSize,
+    # New: reviewed Windows 11 image, filtered by pooled/personal host pool type.
+    [ValidateSet('win11-24h2-ent', 'win11-24h2-avd', 'win11-24h2-avd-m365')]
+    [string]$ImageSku,
     # New: names users see in Windows App (defaults '<prefix> Workspace' and '<prefix> Virtual Desktop').
     [string]$WorkspaceName,
     [string]$DesktopName,
@@ -152,6 +155,7 @@ function Read-ValidatedConfiguration {
     }
 
     $configuration = ConvertFrom-Json -InputObject $json -AsHashtable -Depth 32
+    $null = Get-AvdSessionHostImage -Configuration $configuration
     $identitySubscription = [regex]::Match($configuration.execution.deploymentIdentityResourceId, '^/subscriptions/([^/]+)/', 'IgnoreCase').Groups[1].Value
     if (-not $identitySubscription -or $identitySubscription -ne $configuration.subscriptionId) {
         throw 'The deployment UAMI must be in the configured customer subscription.'
@@ -745,7 +749,7 @@ function New-SizedConfiguration {
     }
 
     $hostPoolType = $recommendation.hostPool.type
-    $configuration.schemaVersion = if ($discovery) { '1.4.0' } else { '1.3.0' }
+    $configuration.schemaVersion = '1.6.0'
     $configuration.Remove('assignments')
     $configuration.workload = [ordered]@{
         hosting            = $answers.hosting
@@ -756,6 +760,13 @@ function New-SizedConfiguration {
     $configuration.hostPool = $recommendation.hostPool
     $configuration.sessionHosts.count = $recommendation.sessionHosts.count
     $configuration.sessionHosts.vmSize = if ($script:WebVmSize) { $script:WebVmSize } elseif ($script:VmSize) { $script:VmSize } else { $recommendation.sessionHosts.vmSize }
+    $images = @(Get-AvdImageOptions -HostPoolType $hostPoolType)
+    $configuration.sessionHosts.imageSku = if ($script:ImageSku) { $script:ImageSku } elseif ($script:Offline -or $images.Count -eq 1) { $images[0].sku } else {
+        $options = [ordered]@{}
+        foreach ($image in $images) { $options[$image.sku] = $image.label }
+        Read-Choice -Question 'Which session host image should be deployed?' -Options $options
+    }
+    $null = Get-AvdSessionHostImage -Configuration $configuration
 
     if ($discovery -and $identityChoice) {
         $configuration.storage = [ordered]@{ accountName = (Resolve-StorageAccountName -Configuration $configuration) }
@@ -844,7 +855,6 @@ function New-SizedConfiguration {
         } else {
             $configuration.Remove('fslogix')
         }
-        $configuration.schemaVersion = '1.5.0'
     }
 
     return Save-Configuration -Configuration $configuration -Path $DestinationPath
@@ -926,6 +936,13 @@ function Write-ConfigurationSummary {
     )
 
     Write-Output "Configuration valid: tenant $($Configuration.tenantId), subscription $($Configuration.subscriptionId), resource group $($Configuration.target.resourceGroupName), hosts $($Configuration.sessionHosts.count)."
+    $image = Get-AvdSessionHostImage -Configuration $Configuration
+    Write-Output "Image: $($image.label) [$($image.publisher):$($image.offer):$($image.sku):$($image.version)]."
+    if ($image.sku -like '*-m365') {
+        Write-Output 'Microsoft 365 Apps: eligible licensing and shared computer activation required. Use Intune for ongoing policies and updates; Intune app assignments are not configured here.'
+    } else {
+        Write-Output 'Microsoft 365 Apps: not included. Install separately through Intune if required; app assignments are not configured here.'
+    }
 
     if ($Configuration.ContainsKey('foundation')) {
         $foundation = $Configuration.foundation
@@ -1038,6 +1055,17 @@ function Invoke-WebGenerate {
     $vmSizeAnswer = & $text 'VmSize'
     if ($vmSizeAnswer -and $vmSizeAnswer -notmatch '^Standard_[A-Za-z0-9_]{1,55}$') { throw "VM size '$vmSizeAnswer' is not a valid Azure VM size name." }
     $script:WebVmSize = $vmSizeAnswer
+    $imageSkuAnswer = & $text 'ImageSku'
+    if (-not $imageSkuAnswer) { throw 'Missing answer for: session host image (ImageSku)' }
+    $script:ImageSku = $imageSkuAnswer
+    $poolType = switch ($Answers['Hosting']) {
+        'Shared' { 'Pooled' }
+        'Dedicated' { 'Personal' }
+        default { throw 'Hosting must be Shared or Dedicated.' }
+    }
+    if (-not (Get-AvdImageOptions -HostPoolType $poolType | Where-Object { $_.sku -ceq $script:ImageSku })) {
+        throw "Image SKU '$script:ImageSku' is not supported for a $poolType host pool."
+    }
     $script:Users = [int]$Answers['Users']
     $script:PeakConcurrencyPct = if ($Answers['Hosting'] -eq 'Dedicated') { 100 } else { [int]$Answers['PeakConcurrencyPct'] }
     $script:AddMeToUsersGroup = [switch][bool]$Answers['AddMeToUsersGroup']
@@ -1115,6 +1143,9 @@ function Invoke-WebApi {
         }
         'GET /api/regions' {
             return @(Get-AvdHostPoolRegions | ForEach-Object { [ordered]@{ name = $_.Name; displayName = $_.DisplayName } })
+        }
+        'GET /api/images' {
+            return ,@(Get-AvdImageOptions -HostPoolType $Query['hostPoolType'])
         }
         'GET /api/resourcegroup' {
             $group = Get-AzResourceGroup -Name $Query['name'] -ErrorAction SilentlyContinue

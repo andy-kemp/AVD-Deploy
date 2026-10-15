@@ -8,6 +8,7 @@ The operator should choose an outcome, not fill in a Bicep parameter sheet. The 
 
 1. Select the already-authorised Azure subscription and target resource group. The app can preselect the current tenant/subscription; it must show both before proceeding.
 2. Answer the sizing questions ([ADR 0010](adr/0010-persona-based-sizing.md)). Is this a **shared platform** (pooled multi-session) or **dedicated session hosts** (one personal VM per user)? Which **persona** fits: Frontline (web/line-of-business apps), Standard (Microsoft 365 and Teams) or Heavy? How many **users**, and for shared pools, what **peak concurrency**? The app recommends host count, VM size and sessions per host from Microsoft's sizing guidance, and the operator confirms or overrides. A pilot can simply answer with a small user count. Never imply a workload capacity guarantee.
+   Select the **session host image** alongside sizing. Pooled offers Windows 11 Enterprise 24H2 multi-session **with Microsoft 365 Apps** (default) or **without Apps**. Personal offers Windows 11 Enterprise 24H2 single-session without Apps; Microsoft does not publish a corresponding single-session Apps image in the reviewed catalog.
 3. Choose **Dedicated test network** or **Existing network**. The earlier test direction is a dedicated VNet in a dedicated resource group. For a no-peering, no-on-premises test, the app may propose an RFC1918 range after checking visible VNets/peerings, but must show the CIDR and require operator confirmation. If connectivity to other networks is required, ask the network owner for an approved range and subnet layout; do not auto-connect or guess.
 4. Confirm the existing AVD user/admin groups and the identity type. Shared pools ask whether users are **hybrid** (synced from AD; needs the documented domain prerequisites) or **cloud-only** (Microsoft preview; needs the storage-app consent, manifest tag and MFA exclusion in [ADR 0011](adr/0011-user-profiles.md)). Dedicated pools keep profiles on the VM and skip this. Discover group names from delegated access where permitted; avoid making operators copy object IDs.
 5. Review the plan, estimated cost, image/VM availability, quota, permissions, resources to be created and manual prerequisites. Approval is a clear **Deploy this plan** action.
@@ -18,6 +19,26 @@ After the first run, offer **Repeat this deployment** from a saved, non-secret p
 - **Add dedicated user** (personal): search for the user by UPN or name and confirm the match. The app assigns the next free host or adds one.
 
 Both show a short review: new host names, the user's display name, UPN and object ID, and the AVD users group membership change.
+
+## Session host images and Microsoft 365 Apps
+
+The web wizard and terminal questionnaire share the same reviewed image list, filtered by host pool type. The chosen SKU is saved as `sessionHosts.imageSku` in contract `1.6.0`, displayed in the configuration summary and Preview, and passed to the session-host Bicep template.
+
+| Desktop type | Image SKU | Offer | New questionnaire default |
+| --- | --- | --- | --- |
+| Pooled / shared | `win11-24h2-avd-m365` | `office-365` | Yes |
+| Pooled / shared | `win11-24h2-avd` | `Windows-11` | No |
+| Personal / dedicated | `win11-24h2-ent` | `Windows-11` | Yes |
+
+All use publisher `MicrosoftWindowsDesktop` and image version `latest` within the selected SKU. These are reviewed Windows 11 24H2 choices, not a live list of every marketplace release. The actual deployment resolves the latest version; Preview records the SKU, not an immutable image-version pin. Azure validation remains authoritative for regional availability.
+
+For terminal automation, pass `-ImageSku win11-24h2-avd-m365` (or the appropriate plain SKU) to `avd.ps1 -Mode New`. Interactive pooled questionnaires default to the first, Apps-included option. `-Offline` uses the supported default if `-ImageSku` is omitted. Personal never accepts a multi-session image.
+
+Existing configurations, including the example, that omit `imageSku` **retain their plain Windows image**. Expand and AddUser preserve the saved selection and schema version. Choosing a different image requires a fresh Preview; it is not an in-place Office installation or a migration of existing hosts. Do not change the image on a populated pool expecting existing VMs to be updated: provision replacement hosts and migrate/drain separately.
+
+Use Intune for ongoing application configuration and updates, and to install Apps on personal hosts or plain pooled images. This deployment does **not** create Intune app assignments or install Apps separately. Microsoft 365 Apps on pooled hosts requires eligible licensing and shared computer activation. Multi-session Intune app deployments must follow supported targeting and installation-context rules; do not assume personal-desktop assignments apply unchanged.
+
+References: [Intune multi-session management](https://learn.microsoft.com/en-us/intune/solutions/azure-virtual-desktop-multi-session), [Microsoft 365 Apps on Azure Virtual Desktop](https://learn.microsoft.com/en-us/microsoft-365-apps/deploy/deploy-microsoft-365-apps-remote-desktop-services), [shared computer activation](https://learn.microsoft.com/en-us/microsoft-365-apps/licensing-activation/overview-shared-computer-activation).
 
 ## Defaults instead of questions
 

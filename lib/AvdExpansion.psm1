@@ -159,7 +159,7 @@ function Add-AvdUserAssignment {
 
     $assignments.Add([ordered]@{ userPrincipalName = $UserPrincipalName; objectId = $ObjectId.ToLowerInvariant(); hostIndex = [int]$hostIndex })
     $Configuration.assignments = @($assignments | Sort-Object { [int]$_.hostIndex })
-    $Configuration.schemaVersion = '1.3.0'
+    if ([version]$Configuration.schemaVersion -lt [version]'1.3.0') { $Configuration.schemaVersion = '1.3.0' }
 
     $hostName = "$($Configuration.sessionHosts.namePrefix)-$hostIndex"
     $action = if ($addedHost) { "new host $hostName" } else { "unassigned host $hostName" }

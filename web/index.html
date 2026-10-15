@@ -93,12 +93,13 @@
     </div>
     <div class="grid" style="margin-top:12px">
       <div class="full"><label for="persona">Persona</label><select id="persona"></select><div class="hint" id="personaHint"></div></div>
+      <div class="full"><label for="imageSku">Session host image</label><select id="imageSku" disabled></select><div class="hint" id="imageHint"></div></div>
       <div><label for="users">Number of users</label><input id="users" type="number" min="1" max="5000" value="10"></div>
       <div id="peakBox"><label for="peak">Peak concurrency (%)</label><input id="peak" type="number" min="1" max="100" value="100"><div class="hint">Share of users signed in at the same time.</div></div>
     </div>
     <div class="sizing" id="sizing">Calculating...</div>
     <div id="capacity"></div>
-    <div id="vmSizeBox" class="hidden" style="margin-top:10px"><label for="vmSize">VM size to use instead</label><select id="vmSize"></select><div class="hint">Same vCPU count as the recommendation, available to this subscription in the region, with enough quota for every host.</div></div>
+    <div id="vmSizeBox" style="margin-top:10px"><label for="vmSize">Session host VM size</label><select id="vmSize" disabled></select><div class="hint">The recommended size is selected by default when available. Alternatives have the same vCPU count and are checked for regional availability and quota for every host. Preview checks the selected size again.</div></div>
   </section>
 
   <section id="profileSection">
@@ -174,7 +175,7 @@
   const token = new URLSearchParams(location.search).get('token') || '';
   history.replaceState(null, '', '/');
   const $ = id => document.getElementById(id);
-  const state = { personas: [], networks: [], existingPrefixes: [], rgEdited: false, groupNamesEdited: { users: false, admins: false }, displayEdited: { workspaceName: false, desktopName: false }, recommendation: null, capacityBlocked: false, capacityKey: '' };
+  const state = { personas: [], networks: [], images: [], imageKey: '', imageSelections: {}, existingPrefixes: [], rgEdited: false, groupNamesEdited: { users: false, admins: false }, displayEdited: { workspaceName: false, desktopName: false }, recommendation: null, capacityBlocked: false, capacityKey: '' };
 
   async function api(path, body) {
     const options = { method: body === undefined ? 'GET' : 'POST', headers: { 'X-AVD-Token': token } };
@@ -311,8 +312,11 @@
   }
   const updateSizing = debounce(async () => {
     const box = $('sizing'); box.replaceChildren();
+    const sizingKey = JSON.stringify({ hosting: radioValue('hosting'), persona: $('persona').value, users: +$('users').value, peakConcurrencyPct: +$('peak').value });
+    state.sizingKey = sizingKey;
     try {
-      const rec = await api('/api/sizing', { hosting: radioValue('hosting'), persona: $('persona').value, users: +$('users').value, peakConcurrencyPct: +$('peak').value });
+      const rec = await api('/api/sizing', JSON.parse(sizingKey));
+      if (state.sizingKey !== sizingKey) return;
       const strong = document.createElement('strong');
       strong.textContent = `Recommendation: ${rec.sessionHosts.count} x ${rec.sessionHosts.vmSize}` + (rec.hostPool.maxSessionLimit ? `, up to ${rec.hostPool.maxSessionLimit} sessions per host` : ', one VM per user');
       const list = document.createElement('ul');
@@ -320,14 +324,21 @@
       box.append(strong, list);
       state.recommendation = rec;
       checkCapacity();
-    } catch (e) { box.textContent = e.message; }
+    } catch (e) { if (state.sizingKey === sizingKey) box.textContent = e.message; }
   }, 300);
+  function invalidateCapacity() {
+    state.capacityKey = '';
+    state.sizingKey = '';
+    $('vmSize').disabled = true;
+  }
   async function checkCapacity() {
     const box = $('capacity'); const rec = state.recommendation; const region = $('region').value;
     state.capacityBlocked = false;
-    if (!rec || !region) { box.replaceChildren(); return; }
-    const key = `${region}|${rec.sessionHosts.vmSize}|${rec.sessionHosts.count}`;
+    if (!rec || !region) { invalidateCapacity(); box.replaceChildren(); return; }
+    const key = `${$('subscription').value}|${region}|${rec.sessionHosts.vmSize}|${rec.sessionHosts.count}`;
+    const previous = state.capacityKey === key ? $('vmSize').value : '';
     state.capacityKey = key;
+    $('vmSize').disabled = true;
     const note = document.createElement('div'); note.className = 'note'; note.textContent = `Checking ${rec.sessionHosts.vmSize} availability in ${region}...`;
     box.replaceChildren(note);
     try {
@@ -336,24 +347,56 @@
       const alternatives = asArray(result.alternatives);
       if (!result.checked) {
         note.classList.add('warn'); note.textContent = asArray(result.warnings).join(' ') || 'Could not check VM availability; Preview will check it again.';
-        $('vmSizeBox').classList.add('hidden');
+        fill($('vmSize'), [rec.sessionHosts.vmSize], s => s, s => `${s} (Recommended; availability unverified)`, rec.sessionHosts.vmSize);
       } else if (result.ok) {
         note.classList.add('ok'); note.textContent = `${rec.sessionHosts.vmSize} is available to this subscription in ${region} with enough vCPU quota for ${rec.sessionHosts.count} host(s).`;
-        $('vmSizeBox').classList.add('hidden');
+        const choices = [...new Set([rec.sessionHosts.vmSize, ...alternatives])];
+        fill($('vmSize'), choices, s => s, s => s === rec.sessionHosts.vmSize ? `${s} (Recommended)` : s, choices.includes(previous) ? previous : rec.sessionHosts.vmSize);
       } else {
         note.classList.add(alternatives.length ? 'warn' : 'err');
         note.textContent = asArray(result.blockers).join(' ');
         state.capacityBlocked = !alternatives.length;
-        fill($('vmSize'), alternatives, s => s, s => s, alternatives[0]);
-        $('vmSizeBox').classList.toggle('hidden', !alternatives.length);
+        fill($('vmSize'), alternatives, s => s, s => s, alternatives.includes(previous) ? previous : alternatives[0], alternatives.length ? undefined : 'No sizes available with sufficient quota');
       }
-    } catch (e) { if (state.capacityKey === key) { note.classList.add('warn'); note.textContent = e.message; } }
+      $('vmSize').disabled = state.capacityBlocked;
+    } catch (e) {
+      if (state.capacityKey === key) {
+        note.classList.add('err'); note.textContent = `VM size check failed: ${e.message}. Change the region or sizing inputs to retry.`;
+        state.capacityBlocked = true;
+      }
+    }
   }
   function onHosting() {
+    invalidateCapacity();
     const shared = radioValue('hosting') === 'Shared';
     $('peakBox').classList.toggle('hidden', !shared);
     $('profileSection').classList.toggle('hidden', !shared);
+    updateImages(shared ? 'Pooled' : 'Personal');
     updateSizing();
+  }
+  async function updateImages(type) {
+    state.imageKey = type;
+    state.images = [];
+    $('imageSku').disabled = true;
+    $('imageSku').replaceChildren();
+    $('imageHint').textContent = 'Loading compatible images...';
+    try {
+      const images = asArray(await api('/api/images?hostPoolType=' + type));
+      if (state.imageKey !== type) return;
+      if (!images.length) throw new Error('No compatible session host images were returned.');
+      state.images = images;
+      fill($('imageSku'), images, i => i.sku, i => i.label, state.imageSelections[type] || images[0].sku);
+      $('imageSku').disabled = false;
+      onImage();
+    } catch (e) {
+      if (state.imageKey === type) $('imageHint').textContent = 'Cannot load images: ' + e.message + ' Switch desktop type to retry.';
+    }
+  }
+  function onImage() {
+    state.imageSelections[state.imageKey] = $('imageSku').value;
+    $('imageHint').textContent = $('imageSku').value.endsWith('-m365')
+      ? 'Apps included. Eligible Microsoft 365 licensing and shared computer activation are required. Use Intune for ongoing policies and updates.'
+      : 'Apps are not included. Install Microsoft 365 Apps separately through Intune if needed.' + (state.imageKey === 'Personal' ? ' Microsoft does not publish an equivalent single-session Apps image in this catalog.' : '');
   }
   function onIdentity() {
     const hybrid = radioValue('identity') === 'Hybrid';
@@ -364,12 +407,13 @@
     const errors = [];
     const answers = {
       SubscriptionId: $('subscription').value, Location: $('region').value, Prefix: $('prefix').value.trim(), ResourceGroupName: $('rg').value.trim(),
-      NetworkMode: radioValue('networkMode'), Hosting: radioValue('hosting'), Persona: $('persona').value,
+      NetworkMode: radioValue('networkMode'), Hosting: radioValue('hosting'), Persona: $('persona').value, ImageSku: $('imageSku').value,
       Users: +$('users').value, PeakConcurrencyPct: +$('peak').value, ScalingPreset: radioValue('scaling'), Overwrite: $('overwrite').checked
     };
     if (!/^[A-Za-z][A-Za-z0-9-]{0,9}$/.test(answers.Prefix)) errors.push('Prefix: start with a letter; letters, digits and hyphens; max 10.');
     if (!answers.ResourceGroupName) errors.push('Resource group is required.');
     if (!answers.Location) errors.push('Choose a region.');
+    if ($('imageSku').disabled || !state.images.some(i => i.sku === answers.ImageSku)) errors.push('Choose a compatible session host image.');
     if (answers.NetworkMode === 'New') {
       answers.AddressSpace = $('addressSpace').value.trim();
       const r = cidrRange(answers.AddressSpace);
@@ -391,8 +435,9 @@
     if ((answers.UsersGroup && answers.UsersGroup === answers.AdminsGroup) || (answers.NewUsersGroup && answers.NewUsersGroup === answers.NewAdminsGroup)) errors.push('The users and admins groups must be different.');
     answers.AddMeToUsersGroup = radioValue('usersMode') === 'new' && $('addMe').checked;
     if (!(answers.Users >= 1 && answers.Users <= 5000)) errors.push('Users must be 1 to 5000.');
-    if (!$('vmSizeBox').classList.contains('hidden') && $('vmSize').value) answers.VmSize = $('vmSize').value;
-    if (state.capacityBlocked) errors.push('The recommended VM size is not available in this region and there is no alternative with quota. Choose another region or request access/quota.');
+    if ($('vmSize').disabled || !$('vmSize').value) errors.push('Wait for the VM size check to finish and choose an available size. If it failed, change the region or sizing inputs to retry.');
+    else answers.VmSize = $('vmSize').value;
+    if (state.capacityBlocked) errors.push('No verified VM size choices are available. Choose another region or resolve the availability/quota check.');
     if (answers.Hosting === 'Shared') {
       if (!(answers.PeakConcurrencyPct >= 1 && answers.PeakConcurrencyPct <= 100)) errors.push('Peak concurrency must be 1 to 100%.');
       answers.UserIdentity = radioValue('identity');
@@ -489,17 +534,18 @@
     groupBox('users'); groupBox('admins');
     wireChoices('networkMode', () => { const n = radioValue('networkMode') === 'New'; $('newNetwork').classList.toggle('hidden', !n); $('existingNetwork').classList.toggle('hidden', n); });
     wireChoices('hosting', onHosting);
+    $('imageSku').addEventListener('change', onImage);
     wireChoices('identity', onIdentity);
     wireChoices('profileFailure', () => {});
     for (const id of ['workspaceName', 'desktopName']) $(id).addEventListener('input', () => { state.displayEdited[id] = true; });
     wireChoices('scaling', () => $('scheduleBox').classList.toggle('hidden', radioValue('scaling') !== 'BusinessHours'));
-    $('subscription').addEventListener('change', onSubscription);
-    $('region').addEventListener('change', onRegion);
+    $('subscription').addEventListener('change', () => { invalidateCapacity(); onSubscription(); });
+    $('region').addEventListener('change', () => { invalidateCapacity(); onRegion(); });
     $('vnet').addEventListener('change', onVnet);
     $('prefix').addEventListener('input', syncDefaults);
     $('rg').addEventListener('input', () => { state.rgEdited = true; checkResourceGroup(); });
     $('addressSpace').addEventListener('input', () => { $('addressSpace').dataset.edited = '1'; checkOverlap(); });
-    for (const id of ['persona', 'users', 'peak']) $(id).addEventListener('input', () => { updateSizing(); if (id === 'persona') $('personaHint').textContent = (state.personas.find(p => p.id === $('persona').value) || {}).description || ''; });
+    for (const id of ['persona', 'users', 'peak']) $(id).addEventListener('input', () => { invalidateCapacity(); updateSizing(); if (id === 'persona') $('personaHint').textContent = (state.personas.find(p => p.id === $('persona').value) || {}).description || ''; });
     $('generate').addEventListener('click', generate);
     $('preview').addEventListener('click', runPreview);
     $('finish').addEventListener('click', async () => {

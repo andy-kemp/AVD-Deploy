@@ -30,7 +30,7 @@ Testing also showed:
 **FSLogix behaviour.**
 - Optional `fslogix.preventTempProfile` sets `PreventLoginWithFailure` and `PreventLoginWithTempProfile`.
 - Host prep always sets `LoadCredKeyFromProfile` and no longer removes framework or shell packages.
-- Deploy restarts the VMs it created, through ARM, after they register, and tags them `avdv2-kerberos-restart`. The restart can't run inside host prep because the host-pool DSC extension runs after it. Existing VMs without the tag (for example after a failed run) may have users signed in, so they get a manual "restart once" task instead.
+- Deploy restarts new and existing untagged FSLogix hosts after they register. Each host is drained before querying its user sessions; any active or disconnected session defers the restart to a manual task. Azure restart completion and AVD `Available` with a heartbeat newer than the restart request are required before tagging `avdv2-kerberos-restart` and restoring the original admission state. Failed or timed-out restarts stop Deploy and leave the host drained, without a completion tag. Already tagged hosts are not restarted. The restart cannot run inside host prep because the host-pool DSC extension runs after it.
 - Preview and Deploy refuse `preventTempProfile` when the pinned prep script doesn't support it.
 
 **PostDeploy.** Run as `-Mode PostDeploy`, or `-Mode Deploy -PostDeploy`, with the operator's delegated Graph and Azure rights. Every step is idempotent and reports "done" or "manual":
@@ -51,7 +51,8 @@ Testing also showed:
    - Capture the storage account's `publicNetworkAccess` and `networkAcls`.
    - Grant the operator a temporary *Storage File Data Privileged Contributor* role.
    - Allow only the operator's public IPv4 (detected, or passed with `-OperatorPublicIp`), keeping default action Deny.
-   - Set the share-root ACLs over the Files REST API (OAuth with `x-ms-file-request-intent: backup`), retrying on 403 while the rule and role propagate.
+   - Set the share-root ACLs over the Files REST API (OAuth with `x-ms-file-request-intent: backup`), retrying on 403 while the rule and role propagate. Address the root directory explicitly with a trailing slash and preserve its attributes, creation time and last-write time with the SMB headers. Explicit preservation resolved root-property updates returning `ResourceNotFound` during sandbox validation.
+   - Read the root directory's permission key and security descriptor back and compare normalized SDDL before reporting success. Missing resources or mismatched permissions remain explicit user-access blockers.
    - **Always** restore the network settings and remove the role in `finally`.
    - The ACLs follow FSLogix's user-based access:
      - users: Modify, this folder only;

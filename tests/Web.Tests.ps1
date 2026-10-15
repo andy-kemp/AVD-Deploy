@@ -34,7 +34,7 @@ $ErrorActionPreference = 'Stop'
 foreach ($name in 'Get-AzResourceGroupDeploymentWhatIfResult', 'New-AzResourceGroupDeployment', 'Test-AzResourceGroupDeployment', 'Get-AzRoleAssignment',
     'New-AzRoleAssignment', 'Remove-AzRoleAssignment', 'Get-AzAccessToken', 'Update-AzWvdDesktop', 'Get-AzDeploymentWhatIfResult',
     'New-AzDeployment', 'Register-AzResourceProvider', 'Get-AzWvdHostPool', 'Update-AzWvdHostPool', 'Get-AzWvdHostPoolRegistrationToken',
-    'Get-AzWvdSessionHost', 'Update-AzWvdSessionHost', 'Get-AzKeyVaultSecret', 'Connect-AzAccount', 'bicep') {
+    'Get-AzWvdSessionHost', 'Get-AzWvdUserSession', 'Update-AzWvdSessionHost', 'Get-AzKeyVaultSecret', 'Connect-AzAccount', 'bicep') {
     Set-Item -Path "Function:\global:$name" -Value { throw "Unexpected call in web tests" }
 }
 function global:Get-AzContext { [pscustomobject]@{ Tenant = [pscustomobject]@{ Id = '11111111-1111-4111-8111-111111111111' }; Subscription = [pscustomobject]@{ Id = '22222222-2222-4222-8222-222222222222' }; Account = [pscustomobject]@{ Id = 'tester@example.com'; Type = 'User' } } }
@@ -50,13 +50,13 @@ function global:Invoke-AzRestMethod {
     if ($Method -eq 'GET' -and $Path -match '/skus\?') {
         $skus = foreach ($size in 'Standard_D8s_v5', 'Standard_D8as_v5') {
             @{ resourceType = 'virtualMachines'; name = $size; family = $(if ($size -like '*as_v5') { 'standardDASv5Family' } else { 'standardDSv5Family' })
-                restrictions = @(if ($size -eq 'Standard_D8s_v5') { @{ type = 'Location'; reasonCode = 'NotAvailableForSubscription' } })
+                restrictions = @(if ($size -eq 'Standard_D8s_v5' -and $Path -match 'uksouth') { @{ type = 'Location'; reasonCode = 'NotAvailableForSubscription' } })
                 capabilities = @(@{ name = 'vCPUs'; value = '8' }, @{ name = 'HyperVGenerations'; value = 'V1,V2' }, @{ name = 'PremiumIO'; value = 'True' }) }
         }
         return [pscustomobject]@{ StatusCode = 200; Content = (@{ value = @($skus) } | ConvertTo-Json -Depth 6) }
     }
     if ($Method -eq 'GET' -and $Path -match '/usages\?') {
-        return [pscustomobject]@{ StatusCode = 200; Content = (@{ value = @(@{ name = @{ value = 'standardDASv5Family' }; currentValue = 0; limit = 20 }, @{ name = @{ value = 'cores' }; currentValue = 0; limit = 20 }) } | ConvertTo-Json -Depth 6) }
+        return [pscustomobject]@{ StatusCode = 200; Content = (@{ value = @(@{ name = @{ value = 'standardDASv5Family' }; currentValue = 0; limit = 20 }, @{ name = @{ value = 'standardDSv5Family' }; currentValue = 0; limit = 20 }, @{ name = @{ value = 'cores' }; currentValue = 0; limit = 20 }) } | ConvertTo-Json -Depth 6) }
     }
     [pscustomobject]@{ StatusCode = 200; Content = '{"nameAvailable":true}' }
 }
@@ -72,7 +72,7 @@ function global:Get-AzVirtualNetwork {
 $global:CreatedGroups = @()
 function global:Get-AzADGroup {
     param($ObjectId, $DisplayNameStartsWith, $DisplayName, $First, $ErrorAction)
-    $groups = @([pscustomobject]@{ Id = '44444444-4444-4444-8444-444444444444'; DisplayName = 'AVD Users' }, [pscustomobject]@{ Id = '55555555-5555-4555-8555-555555555555'; DisplayName = 'AVD Admins' }) + $global:CreatedGroups
+    $groups = @([pscustomobject]@{ Id = '44444444-4444-4444-8444-444444444444'; DisplayName = 'AVD Users'; SecurityEnabled = $true }, [pscustomobject]@{ Id = '55555555-5555-4555-8555-555555555555'; DisplayName = 'AVD Admins'; SecurityEnabled = $true }) + $global:CreatedGroups
     if ($ObjectId) { return $groups | Where-Object { $_.Id -eq $ObjectId } }
     if ($DisplayName) { return $groups | Where-Object { $_.DisplayName -eq $DisplayName } }
     if ($DisplayNameStartsWith) { return $groups | Where-Object { $_.DisplayName -like "$DisplayNameStartsWith*" } }
@@ -80,7 +80,7 @@ function global:Get-AzADGroup {
 }
 function global:New-AzADGroup {
     param($DisplayName, $MailNickname, [switch]$SecurityEnabled, $Description, $ErrorAction)
-    $group = [pscustomobject]@{ Id = $(if ($DisplayName -like '*admins') { 'bbbbbbbb-1111-4111-8111-111111111111' } else { 'aaaaaaaa-1111-4111-8111-111111111111' }); DisplayName = $DisplayName }
+    $group = [pscustomobject]@{ Id = $(if ($DisplayName -like '*admins') { 'bbbbbbbb-1111-4111-8111-111111111111' } else { 'aaaaaaaa-1111-4111-8111-111111111111' }); DisplayName = $DisplayName; SecurityEnabled = $true }
     $global:CreatedGroups += $group
     $group
 }
@@ -141,6 +141,11 @@ try {
     Assert-True ($subscriptions.Status -eq 200 -and @($subscriptions.Json)[0].name -eq 'Sandbox') 'Subscriptions should be listed.'
     $regions = Invoke-Wizard -Path '/api/regions' -Headers $auth
     Assert-True (@($regions.Json | ForEach-Object { $_.name }) -contains 'uksouth') 'AVD regions should be listed.'
+    $pooledImages = Invoke-Wizard -Path '/api/images?hostPoolType=Pooled' -Headers $auth
+    $personalImages = Invoke-Wizard -Path '/api/images?hostPoolType=Personal' -Headers $auth
+    Assert-True ($pooledImages.Status -eq 200 -and @($pooledImages.Json).Count -eq 2 -and $pooledImages.Json[0].sku -eq 'win11-24h2-avd-m365' -and $pooledImages.Json[0].offer -eq 'office-365' -and $pooledImages.Json[1].sku -eq 'win11-24h2-avd') 'Pooled images must offer Apps first and plain multi-session second.'
+    Assert-True ($personalImages.Status -eq 200 -and $personalImages.Content.StartsWith('[') -and @($personalImages.Json).Count -eq 1 -and @($personalImages.Json)[0].sku -eq 'win11-24h2-ent') "Personal images must return an array containing only single-session Enterprise; got $($personalImages.Content)"
+    Assert-True ((Invoke-Wizard -Path '/api/images?hostPoolType=Invalid' -Headers $auth).Status -eq 400) 'An invalid host pool type must be rejected.'
     $networks = Invoke-Wizard -Path '/api/networks?region=uksouth' -Headers $auth
     Assert-True ($networks.Json.proposedAddressSpace -eq '10.201.0.0/24' -and @($networks.Json.networks)[0].name -eq 'vnet-existing') 'Networks and a free address space should be returned.'
     $groups = Invoke-Wizard -Path '/api/groups?search=AVD%20Ad' -Headers $auth
@@ -153,13 +158,17 @@ try {
     Assert-True ($capacity.Status -eq 200 -and $capacity.Json.checked -and -not $capacity.Json.ok -and (@($capacity.Json.blockers) -join ' ') -match 'restricted for this subscription' -and @($capacity.Json.alternatives) -contains 'Standard_D8as_v5') "Capacity should flag a restricted size and offer alternatives, got $($capacity.Content)"
     $capacity = Invoke-Wizard -Path '/api/capacity' -Method POST -Headers $auth -Body @{ location = 'uksouth'; vmSize = 'Standard_D8as_v5'; count = 2 }
     Assert-True ($capacity.Json.ok) "An unrestricted size with quota should pass, got $($capacity.Content)"
+    $capacity = Invoke-Wizard -Path '/api/capacity' -Method POST -Headers $auth -Body @{ location = 'westeurope'; vmSize = 'Standard_D8s_v5'; count = 2 }
+    Assert-True ($capacity.Json.checked -and $capacity.Json.ok -and @($capacity.Json.alternatives) -contains 'Standard_D8as_v5') 'A supported recommendation should still return dropdown alternatives with enough quota.'
+    $capacity = Invoke-Wizard -Path '/api/capacity' -Method POST -Headers $auth -Body @{ location = 'westeurope'; vmSize = 'Standard_D8s_v5'; count = 3 }
+    Assert-True (-not $capacity.Json.ok -and @($capacity.Json.alternatives).Count -eq 0) 'Sizes without quota for all hosts must not appear as available alternatives.'
     Write-Pass 'discovery APIs list subscriptions, regions, networks, groups, time zones, sizing and VM size availability.'
 
     # Generate
     $answers = @{
         SubscriptionId = '22222222-2222-4222-8222-222222222222'; Location = 'uksouth'; Prefix = 'WEB'; ResourceGroupName = 'rg-web-avd'
         NetworkMode = 'New'; AddressSpace = '10.201.0.0/24'; NewUsersGroup = 'sg-web-avd-users'; NewAdminsGroup = 'sg-web-avd-admins'; AddMeToUsersGroup = $true
-        Hosting = 'Shared'; Persona = 'Standard'; Users = 10; PeakConcurrencyPct = 100; UserIdentity = 'CloudOnly'
+        Hosting = 'Shared'; ImageSku = 'win11-24h2-avd-m365'; Persona = 'Standard'; Users = 10; PeakConcurrencyPct = 100; UserIdentity = 'CloudOnly'
         ScalingPreset = 'BusinessHours'; WorkdayStart = '08:00'
     }
     $missing = Invoke-Wizard -Path '/api/generate' -Method POST -Headers $auth -Body $answers
@@ -173,7 +182,8 @@ try {
     $generated = Invoke-Wizard -Path '/api/generate' -Method POST -Headers $auth -Body $answers
     Assert-True ($generated.Status -eq 200) "Generate failed: $($generated.Json.error)"
     $config = Get-Content -LiteralPath $outputFile -Raw | ConvertFrom-Json -AsHashtable
-    Assert-True ($config.schemaVersion -eq '1.5.0' -and $config.target.resourceGroupName -eq 'rg-web-avd' -and $config.accessGroups.usersObjectId -eq 'aaaaaaaa-1111-4111-8111-111111111111' -and $config.scaling.timeZone -eq 'GMT Standard Time') 'Generate should write a complete 1.5.0 configuration with the created groups.'
+    Assert-True ($config.schemaVersion -eq '1.6.0' -and $config.sessionHosts.imageSku -eq 'win11-24h2-avd-m365' -and $config.target.resourceGroupName -eq 'rg-web-avd' -and $config.accessGroups.usersObjectId -eq 'aaaaaaaa-1111-4111-8111-111111111111' -and $config.scaling.timeZone -eq 'GMT Standard Time') 'Generate should write a complete 1.6.0 configuration with the chosen image and created groups.'
+    Assert-True ((@($generated.Json.summary) -join ' ') -match 'office-365:win11-24h2-avd-m365:latest') 'The summary must identify the exact chosen Apps image.'
     Assert-True ($config.display.workspaceName -eq 'Contoso Workspace' -and $config.display.desktopName -eq 'Contoso Desktop' -and $config.fslogix.preventTempProfile -eq $true) 'Generate should carry the display names and the FSLogix failure choice.'
     Assert-True (@($generated.Json.next)[1] -match '-PostDeploy') 'The Deploy command should include -PostDeploy.'
     Assert-True (@($generated.Json.next)[0] -match '-Mode Preview' -and (@($generated.Json.summary) -join ' ') -match 'Configuration valid') 'Generate should return the summary and next commands.'
@@ -192,6 +202,27 @@ try {
     $bad = Invoke-Wizard -Path '/api/generate' -Method POST -Headers $auth -Body $answers
     Assert-True ($bad.Status -eq 400) 'An invalid VM size must be rejected.'
     Write-Pass 'Preview runs from the page and a replacement VM size flows into the configuration.'
+
+    $answers.Remove('VmSize')
+    $answers.ImageSku = 'win11-24h2-avd'
+    $generated = Invoke-Wizard -Path '/api/generate' -Method POST -Headers $auth -Body $answers
+    $config = Get-Content -LiteralPath $outputFile -Raw | ConvertFrom-Json -AsHashtable
+    Assert-True ($generated.Status -eq 200 -and $config.sessionHosts.imageSku -eq 'win11-24h2-avd') 'A repeated generation must use the new plain-image choice, not a stale Apps choice.'
+    $answers.Remove('ImageSku')
+    $bad = Invoke-Wizard -Path '/api/generate' -Method POST -Headers $auth -Body $answers
+    Assert-True ($bad.Status -eq 400 -and $bad.Json.error -match 'Missing answer') 'A missing image must fail instead of prompting or using a stale choice.'
+    $answers.ImageSku = 'win11-24h2-ent'
+    $bad = Invoke-Wizard -Path '/api/generate' -Method POST -Headers $auth -Body $answers
+    Assert-True ($bad.Status -eq 400 -and $bad.Json.error -match 'not supported') 'Pooled generation must reject a personal image.'
+    $answers.Hosting = 'Dedicated'
+    $answers.ImageSku = 'win11-24h2-avd-m365'
+    $bad = Invoke-Wizard -Path '/api/generate' -Method POST -Headers $auth -Body $answers
+    Assert-True ($bad.Status -eq 400 -and $bad.Json.error -match 'not supported') 'Personal generation must reject multi-session Apps images.'
+    $answers.ImageSku = 'win11-24h2-ent'
+    $generated = Invoke-Wizard -Path '/api/generate' -Method POST -Headers $auth -Body $answers
+    $config = Get-Content -LiteralPath $outputFile -Raw | ConvertFrom-Json -AsHashtable
+    Assert-True ($generated.Status -eq 200 -and $config.hostPool.type -eq 'Personal' -and $config.sessionHosts.imageSku -eq 'win11-24h2-ent') 'Switching to personal must save the compatible single-session image.'
+    Write-Pass 'image choices are filtered by host pool type, saved on regeneration and validated on the server.'
 
     $shutdown = Invoke-Wizard -Path '/api/shutdown' -Method POST -Headers $auth -Body @{}
     Assert-True ($shutdown.Status -eq 200 -and $process.WaitForExit(15000)) 'Shutdown should stop the wizard.'

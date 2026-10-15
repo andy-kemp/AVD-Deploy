@@ -33,6 +33,9 @@ param sessionHostPrepScriptUrl string
 @description('Existing host pool type; selects the multi-session (Pooled) or single-session (Personal) Windows 11 image.')
 @allowed(['Pooled', 'Personal'])
 param hostPoolType string = 'Pooled'
+@description('Reviewed marketplace image SKU. Personal pools use single-session Enterprise; pooled pools use multi-session with optional Microsoft 365 Apps. Omitted for legacy plain Windows behaviour.')
+@allowed(['win11-24h2-ent', 'win11-24h2-avd', 'win11-24h2-avd-m365'])
+param imageSku string = hostPoolType == 'Personal' ? 'win11-24h2-ent' : 'win11-24h2-avd'
 @description('FSLogix configures profile containers on Azure Files; Local keeps profiles on the VM (dedicated hosts).')
 @allowed(['FSLogix', 'Local'])
 param profileMode string = 'FSLogix'
@@ -104,8 +107,8 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = [for i in range(0, 
     storageProfile: {
       imageReference: {
         publisher: 'MicrosoftWindowsDesktop'
-        offer: 'Windows-11'
-        sku: hostPoolType == 'Personal' ? 'win11-24h2-ent' : 'win11-24h2-avd'
+        offer: imageSku == 'win11-24h2-avd-m365' ? 'office-365' : 'Windows-11'
+        sku: imageSku
         version: 'latest'
       }
       osDisk: {

@@ -49,6 +49,9 @@ function Reset-State {
         AssignedUsers  = @{}
         GraphScopes    = @('User.ReadBasic.All', 'GroupMember.ReadWrite.All')
         GraphDenied    = $false
+        MissingAccessGroup = ''
+        AccessGroupReadError = ''
+        NonSecurityGroup = ''
         GraphExisting  = @()
         Prefix         = 'AVDHOST'
         PrepScript     = $prepScript
@@ -67,8 +70,19 @@ function Reset-State {
         DesktopRenameFails = $false
         ExistingVms    = @()
         VmTags         = @{}
+        UserSessions   = @{}
+        DrainedHosts   = @{}
+        RestartFailed  = $false
+        RestartPending = 0
+        RestartUnavailable = $false
+        RestartLocation = $false
+        SessionReadFails = $false
+        StaleHeartbeat = $false
         Graph          = $null
         FilesForbidden = 0
+        FilesMissing   = $false
+        AclMismatch    = $false
+        ShareSddls     = @{}
         StorageState   = @{ properties = @{ publicNetworkAccess = 'Disabled'; networkAcls = @{ defaultAction = 'Deny'; bypass = 'AzureServices'; ipRules = @(); virtualNetworkRules = @() } } }
     }
     $global:AvdTest.Graph = @{
@@ -162,10 +176,15 @@ function global:Get-AzSubscription {
 function global:Get-AzADGroup {
     param($ObjectId, $DisplayNameStartsWith, $DisplayName, $ErrorAction)
     $groups = @(
-        [pscustomobject]@{ Id = '44444444-4444-4444-8444-444444444444'; DisplayName = 'AVD Users' },
-        [pscustomobject]@{ Id = '55555555-5555-4555-8555-555555555555'; DisplayName = 'AVD Admins' }
+        [pscustomobject]@{ Id = '44444444-4444-4444-8444-444444444444'; DisplayName = 'AVD Users'; SecurityEnabled = $true },
+        [pscustomobject]@{ Id = '55555555-5555-4555-8555-555555555555'; DisplayName = 'AVD Admins'; SecurityEnabled = $true }
     ) + @($global:AvdTest.CreatedGroups)
-    if ($ObjectId) { return $groups | Where-Object { $_.Id -eq $ObjectId } }
+    if ($ObjectId) {
+        if ($global:AvdTest.AccessGroupReadError) { throw $global:AvdTest.AccessGroupReadError }
+        $found = $groups | Where-Object { $_.Id -eq $ObjectId -and $_.Id -ne $global:AvdTest.MissingAccessGroup }
+        if ($found -and $ObjectId -eq $global:AvdTest.NonSecurityGroup) { $found.SecurityEnabled = $false }
+        return $found
+    }
     if ($DisplayName) { return $groups | Where-Object { $_.DisplayName -eq $DisplayName } }
     $groups | Where-Object { $_.DisplayName -like "$DisplayNameStartsWith*" }
 }
@@ -173,7 +192,7 @@ function global:New-AzADGroup {
     param($DisplayName, $MailNickname, [switch]$SecurityEnabled, $Description, $ErrorAction)
     if (-not $SecurityEnabled) { throw 'Groups must be security enabled.' }
     $id = if ($DisplayName -like '*admins') { 'bbbbbbbb-1111-4111-8111-111111111111' } else { 'aaaaaaaa-1111-4111-8111-111111111111' }
-    $group = [pscustomobject]@{ Id = $id; DisplayName = $DisplayName }
+    $group = [pscustomobject]@{ Id = $id; DisplayName = $DisplayName; SecurityEnabled = $true }
     $global:AvdTest.CreatedGroups = @($global:AvdTest.CreatedGroups) + $group
     $global:AvdTest.Calls.Add("create-group:$DisplayName")
     $group
@@ -203,7 +222,22 @@ function global:Invoke-AzRestMethod {
     }
     if ($Method -eq 'POST' -and $Path -match '/virtualMachines/([^/]+)/restart\?') {
         $global:AvdTest.Post.Add("restart:$($Matches[1])")
-        return [pscustomobject]@{ StatusCode = 202; Content = '' }
+        $header = if ($global:AvdTest.RestartLocation) { 'Location' } else { 'Azure-AsyncOperation' }
+        $response = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]::Accepted)
+        $null = $response.Headers.TryAddWithoutValidation($header, 'https://management.azure.com/mock/restart-operation')
+        return [pscustomobject]@{ StatusCode = 202; Content = ''; Headers = $response.Headers }
+    }
+    if ($Method -eq 'GET' -and $Path -eq '/mock/restart-operation') {
+        $global:AvdTest.Post.Add('restart-status')
+        if ($global:AvdTest.RestartLocation) {
+            if ($global:AvdTest.RestartPending -gt 0) {
+                $global:AvdTest.RestartPending--
+                return [pscustomobject]@{ StatusCode = 202; Content = '' }
+            }
+            if (-not $global:AvdTest.RestartFailed) { return [pscustomobject]@{ StatusCode = 204; Content = '' } }
+        }
+        $state = if ($global:AvdTest.RestartFailed) { 'Failed' } elseif ($global:AvdTest.RestartPending -gt 0) { $global:AvdTest.RestartPending--; 'InProgress' } else { 'Succeeded' }
+        return [pscustomobject]@{ StatusCode = 200; Content = (@{ status = $state } | ConvertTo-Json) }
     }
     if ($Path -match '/storageAccounts/[^/?]+\?') {
         if ($Method -eq 'GET') { return [pscustomobject]@{ StatusCode = 200; Content = ($global:AvdTest.StorageState | ConvertTo-Json -Depth 10) } }
@@ -260,6 +294,7 @@ function global:Get-AzResourceGroupDeploymentWhatIfResult {
     param($ResourceGroupName, $TemplateFile, $TemplateParameterObject, $ErrorAction)
     $stage = if ($TemplateFile -like '*session-hosts.bicep') { 'hosts' } else { 'platform' }
     $global:AvdTest.Calls.Add("whatif-$stage")
+    if ($stage -eq 'hosts') { $global:AvdTest.PreviewHostParameters = $TemplateParameterObject }
     [pscustomobject]@{ Changes = @([pscustomobject]@{ FullyQualifiedResourceId = "/mock/$stage"; ChangeType = 'Create' }); PotentialChanges = @() }
 }
 function global:Get-AzWvdHostPool { param($ResourceGroupName, $Name, $ErrorAction) if ($global:AvdTest.ExistingPool) { [pscustomobject]@{ Name = $Name } } }
@@ -294,19 +329,33 @@ function global:Update-AzWvdHostPool {
 }
 function global:Get-AzWvdHostPoolRegistrationToken { param($ResourceGroupName, $HostPoolName, $ErrorAction) [pscustomobject]@{ Token = 'mock-secret-token' } }
 function global:Get-AzWvdSessionHost {
-    param($ResourceGroupName, $HostPoolName)
-    $global:AvdTest.Calls.Add('verify-hosts')
+    param($ResourceGroupName, $HostPoolName, $ErrorAction)
+    if (-not $global:AvdTest.Calls.Contains('verify-hosts')) { $global:AvdTest.Calls.Add('verify-hosts') }
     $count = if ($global:AvdTest.MissingHost) { $global:AvdTest.HostCount - 1 } else { $global:AvdTest.HostCount }
     for ($index = 0; $index -lt $count; $index++) {
         $computer = "$($global:AvdTest.Prefix)-$index"
         [pscustomobject]@{
             Name         = "$HostPoolName/$computer"
-            Status       = 'Available'
+            Status       = if ($global:AvdTest.RestartUnavailable) { 'Unavailable' } else { 'Available' }
+            LastHeartBeat = if ($global:AvdTest.StaleHeartbeat) { [DateTimeOffset]::UtcNow.AddHours(-1) } else { [DateTimeOffset]::UtcNow }
+            AllowNewSession = -not $global:AvdTest.DrainedHosts.ContainsKey($computer)
             AssignedUser = if ($global:AvdTest.AssignedUsers.ContainsKey($computer)) { $global:AvdTest.AssignedUsers[$computer] } else { $null }
         }
     }
 }
-function global:Update-AzWvdSessionHost { param($ResourceGroupName, $HostPoolName, $Name, $AssignedUser, $ErrorAction) $global:AvdTest.Calls.Add("assign:$Name=$AssignedUser") }
+function global:Get-AzWvdUserSession {
+    param($ResourceGroupName, $HostPoolName, $SessionHostName, $ErrorAction)
+    $global:AvdTest.Post.Add("sessions:$SessionHostName")
+    if ($global:AvdTest.SessionReadFails) { throw 'Cannot enumerate user sessions.' }
+    if ($global:AvdTest.UserSessions.ContainsKey($SessionHostName)) { $global:AvdTest.UserSessions[$SessionHostName] }
+}
+function global:Update-AzWvdSessionHost {
+    param($ResourceGroupName, $HostPoolName, $Name, $AssignedUser, [Nullable[bool]]$AllowNewSession, $ErrorAction)
+    if ($null -ne $AllowNewSession) {
+        $global:AvdTest.Post.Add("admission:${Name}=$AllowNewSession")
+        if ($AllowNewSession) { $global:AvdTest.DrainedHosts.Remove($Name) } else { $global:AvdTest.DrainedHosts[$Name] = $true }
+    } else { $global:AvdTest.Calls.Add("assign:$Name=$AssignedUser") }
+}
 function global:Update-AzWvdDesktop {
     param($ResourceGroupName, $ApplicationGroupName, $Name, $FriendlyName, $ErrorAction)
     if ($global:AvdTest.DesktopRenameFails) { throw 'mock-desktop-failure' }
@@ -319,15 +368,31 @@ function global:Invoke-RestMethod { param($Uri, $TimeoutSec, $ErrorAction) $glob
 function global:Invoke-WebRequest {
     param($Uri, $OutFile, $Method, $Headers, [switch]$UseBasicParsing, [switch]$SkipHeaderValidation, $ErrorAction)
     if ($Method -eq 'PUT') {
+        if (([uri]$Uri).AbsolutePath -notmatch '^/(profiles|redirections)/$' -or ([uri]$Uri).Query -ne '?restype=directory&comp=properties') { throw 'Root directory ACL URL must include the slash after the share name.' }
         if ($Headers.Authorization -ne 'Bearer mock-storage-token' -or $Headers['x-ms-file-request-intent'] -ne 'backup') { throw 'Files ACL requests must use the storage token with backup intent.' }
         if ($global:AvdTest.StorageState.properties.publicNetworkAccess -ne 'Enabled') { throw 'Files ACL request sent while the storage firewall was closed.' }
+        foreach ($header in 'x-ms-file-attributes', 'x-ms-file-creation-time', 'x-ms-file-last-write-time') {
+            if ($Headers[$header] -ne 'preserve') { throw "Missing required preservation header $header." }
+        }
+        if ($global:AvdTest.FilesMissing) { throw [Microsoft.PowerShell.Commands.HttpResponseException]::new('ResourceNotFound', [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]::NotFound)) }
         if ($global:AvdTest.FilesForbidden -gt 0) {
             $global:AvdTest.FilesForbidden--
             throw [Microsoft.PowerShell.Commands.HttpResponseException]::new('Forbidden', [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]::Forbidden))
         }
         $share = ([uri]$Uri).AbsolutePath.Trim('/')
         $global:AvdTest.Post.Add("acl:$share=$($Headers['x-ms-file-permission'])")
-        return
+        $global:AvdTest.ShareSddls[$share] = $Headers['x-ms-file-permission']
+        return [pscustomobject]@{ StatusCode = 200 }
+    }
+    if ($Method -eq 'GET' -and $Uri -match '\?restype=directory$') {
+        return [pscustomobject]@{ StatusCode = 200; Headers = @{ 'x-ms-file-permission-key' = @('mock-key') } }
+    }
+    if ($Method -eq 'GET' -and $Uri -match '\?restype=share&comp=filepermission$') {
+        if ($Headers['x-ms-file-permission-key'] -ne 'mock-key') { throw 'Permission read must use the root directory permission key.' }
+        $share = ([uri]$Uri).AbsolutePath.Trim('/')
+        $global:AvdTest.Post.Add("acl-verified:$share")
+        $sddl = if ($global:AvdTest.AclMismatch) { 'O:BAG:SYD:(A;;FA;;;WD)' } else { "$($global:AvdTest.ShareSddls[$share])S:NO_ACCESS_CONTROL" }
+        return [pscustomobject]@{ StatusCode = 200; Content = [System.Text.Encoding]::UTF8.GetBytes((@{ permission = $sddl } | ConvertTo-Json)) }
     }
     Copy-Item -LiteralPath $global:AvdTest.PrepScript -Destination $OutFile
 }
@@ -396,10 +461,32 @@ try {
     Assert-True ($result.Output -match 'Ready\. Deploy with') 'Preview should say it is ready to deploy.'
     Write-Pass 'fresh preview is read-only, platform-only and writes a plan with warnings.'
 
+    foreach ($flags in @(
+        @{ MissingAccessGroup = '44444444-4444-4444-8444-444444444444' },
+        @{ AccessGroupReadError = '[Request_ResourceNotFound] Resource does not exist' },
+        @{ AccessGroupReadError = 'Insufficient privileges to complete the operation' },
+        @{ NonSecurityGroup = '55555555-5555-4555-8555-555555555555' }
+    )) {
+        Reset-State -Flags $flags
+        $result = Invoke-Cli @('-Mode', 'Preview', '-ConfigurationFile', $pooled)
+        $plan = Get-Content -LiteralPath ([System.IO.Path]::ChangeExtension($pooled, '.plan.json')) -Raw | ConvertFrom-Json -AsHashtable
+        Assert-True (-not $result.Error -and $plan.blockers.Count -gt 0 -and $result.Calls -eq '' -and ($plan.blockers -join ' ') -match 'group') 'Missing, unreadable or non-security groups must block Preview before what-if.'
+    }
+    Reset-State
+    $null = Invoke-Cli @('-Mode', 'Preview', '-ConfigurationFile', $pooled)
+    Reset-State @{ MissingAccessGroup = '55555555-5555-4555-8555-555555555555' }
+    $result = Invoke-Cli @('-Mode', 'Deploy', '-ConfigurationFile', $pooled, '-AsSignedInUser', '-Approve', 'avd-example')
+    Assert-True ($result.Error -match 'Access group validation failed' -and $result.Calls -eq '') 'A group deleted after Preview must stop Deploy before secrets or resource changes.'
+    Reset-State @{ AccountType = 'ManagedService'; AccessGroupReadError = 'Graph must not be called' }
+    $result = Invoke-Cli @('-Mode', 'Preview', '-ConfigurationFile', $pooled)
+    $plan = Get-Content -LiteralPath ([System.IO.Path]::ChangeExtension($pooled, '.plan.json')) -Raw | ConvertFrom-Json -AsHashtable
+    Assert-True (-not $result.Error -and $plan.blockers.Count -eq 0 -and ($plan.warnings -join ' ') -match 'no Graph permissions are requested') 'Managed identity Preview must report the group-check limitation without using Graph.'
+    Write-Pass 'operator group preflight blocks missing, unreadable and non-security groups and rechecks at Deploy without granting Graph access to managed identities.'
+
     Reset-State @{ ExistingPool = $true; PowerRole = $true }
     $result = Invoke-Cli @('-Mode', 'Preview', '-ConfigurationFile', $pooled)
     $plan = Get-Content -LiteralPath ([System.IO.Path]::ChangeExtension($pooled, '.plan.json')) -Raw | ConvertFrom-Json -AsHashtable
-    Assert-True ($result.Calls -eq 'whatif-platform,whatif-hosts' -and $plan.changes.Count -eq 2 -and $plan.warnings.Count -eq 0) "Existing-pool preview should cover both stages with no warnings, got '$($result.Calls)'."
+    Assert-True ($result.Calls -eq 'whatif-platform,whatif-hosts' -and $plan.changes.Count -eq 2 -and $plan.warnings.Count -eq 1 -and $plan.warnings[0] -match 'does not include Microsoft 365 Apps') "Existing-pool preview should cover both stages and explain the plain image, got '$($result.Calls)'."
     Write-Pass 'preview of an existing pool covers platform and session hosts without reading secrets.'
 
     Reset-State @{ Tenant = '99999999-9999-4999-8999-999999999999' }
@@ -463,8 +550,30 @@ try {
     Assert-True ($result.Calls -eq 'read-secret,deploy-platform,create-token,deploy-hosts,remove-token,verify-hosts') "Unexpected deploy order '$($result.Calls)'."
     Assert-True ($result.Output -notmatch 'mock-secret-token' -and $result.Output -notmatch 'mock-admin-password') 'Secrets leaked into output.'
     Assert-True ($global:AvdTest.HostParameters.profileMode -eq 'FSLogix' -and $global:AvdTest.HostParameters.hostPoolType -eq 'Pooled' -and $global:AvdTest.PlatformParameters.profile -eq 'AzureFilesHybridKerberos') 'Pooled hybrid deploy should pass FSLogix and pooled parameters.'
+    Assert-True ($global:AvdTest.HostParameters.imageSku -eq 'win11-24h2-avd') 'Legacy pooled deploy must retain the plain Windows image.'
     Assert-True ($result.Output -match 'Registration token revoked') 'Deploy should report token revocation.'
     Write-Pass 'Deploy runs platform, token, hosts, revocation and verification in order without leaking secrets.'
+
+    $apps = New-TestConfiguration -Name 'apps-image' -Change {
+        param($c)
+        $c.schemaVersion = '1.6.0'
+        $c.sessionHosts.imageSku = 'win11-24h2-avd-m365'
+    }
+    Reset-State @{ ExistingPool = $true }
+    $result = Invoke-Cli @('-Mode', 'Preview', '-ConfigurationFile', $apps)
+    $imagePlan = Get-Content -LiteralPath ([System.IO.Path]::ChangeExtension($apps, '.plan.json')) -Raw | ConvertFrom-Json -AsHashtable
+    Assert-True (-not $result.Error -and $global:AvdTest.PreviewHostParameters.imageSku -eq 'win11-24h2-avd-m365' -and $imagePlan.sessionHosts.image.offer -eq 'office-365' -and $imagePlan.sessionHosts.image.sku -eq 'win11-24h2-avd-m365') 'Preview must pass and record the exact Microsoft 365 image.'
+    Assert-True ($result.Output -match 'shared computer activation') 'Preview must explain pooled Apps licensing and activation requirements.'
+    Reset-State
+    $result = Invoke-Cli @('-Mode', 'Deploy', '-ConfigurationFile', $apps, '-AsSignedInUser', '-Approve', 'avd-example')
+    Assert-True (-not $result.Error -and $global:AvdTest.HostParameters.imageSku -eq 'win11-24h2-avd-m365') 'Deploy must pass the selected Microsoft 365 image to Bicep.'
+    $changedImage = Get-Content -LiteralPath $apps -Raw | ConvertFrom-Json -AsHashtable
+    $changedImage.sessionHosts.imageSku = 'win11-24h2-avd'
+    [System.IO.File]::WriteAllText($apps, ($changedImage | ConvertTo-Json -Depth 32))
+    Reset-State
+    $result = Invoke-Cli @('-Mode', 'Deploy', '-ConfigurationFile', $apps, '-AsSignedInUser', '-Approve', 'avd-example')
+    Assert-True ($result.Error -match 'configuration changed' -and $result.Calls -eq '') 'Changing the image after Preview must invalidate the approved plan.'
+    Write-Pass 'the selected Apps image flows through Preview, the saved plan and Deploy, and changing it requires a fresh Preview.'
 
     Reset-State
     $null = Invoke-Cli @('-Mode', 'Preview', '-ConfigurationFile', $happy)
@@ -504,6 +613,7 @@ try {
     Assert-True ($result.Calls -match 'assign:AVDHOST-0=jane@example.com' -and $result.Calls -notmatch 'assign:AVDHOST-1') 'Only the unassigned host should be assigned.'
     Assert-True ($result.Calls -match 'group-add:aaaaaaaa' -and $result.Output -match 'In AVD users group: bob@example.com') 'Users should be added to the group, treating existing membership as success.'
     Assert-True ($global:AvdTest.HostParameters.profileMode -eq 'Local' -and $global:AvdTest.HostParameters.hostPoolType -eq 'Personal' -and -not $global:AvdTest.HostParameters.ContainsKey('storageAccountName')) 'Dedicated deploy should use local profiles and no storage.'
+    Assert-True ($global:AvdTest.HostParameters.imageSku -eq 'win11-24h2-ent') 'Legacy personal deploy must retain single-session Windows.'
     Write-Pass 'dedicated deploy assigns hosts to named users and adds them to the AVD users group.'
 
     Reset-State @{ AssignedUsers = @{ 'AVDHOST-1' = 'mallory@example.com' }; GraphDenied = $true }
@@ -522,12 +632,12 @@ try {
     $discovered = Join-Path $temporaryDirectory 'discovered.json'
     Reset-State @{ MissingRg = $true }
     $result = Invoke-Cli @('-Mode', 'New', '-OutputFile', $discovered, '-SubscriptionId', 'Sandbox', '-Location', 'uksouth', '-Prefix', 'TST',
-        '-NetworkMode', 'New', '-UsersGroup', 'AVD Users', '-AdminsGroup', 'AVD Admins', '-Hosting', 'Shared', '-Persona', 'Standard',
+        '-NetworkMode', 'New', '-UsersGroup', 'AVD Users', '-AdminsGroup', 'AVD Admins', '-Hosting', 'Shared', '-ImageSku', 'win11-24h2-avd-m365', '-Persona', 'Standard',
         '-Users', '20', '-PeakConcurrencyPct', '100', '-UserIdentity', 'CloudOnly', '-ScalingPreset', 'None')
     Assert-True (-not $result.Error) "Discovery New failed: $($result.Error)"
     $config = Get-Content -LiteralPath $discovered -Raw | ConvertFrom-Json -AsHashtable
     $pinned = Get-Content -LiteralPath (Join-Path $v2Root 'contracts/artifacts.json') -Raw | ConvertFrom-Json -AsHashtable
-    Assert-True ($config.schemaVersion -eq '1.5.0' -and $config.tenantId -eq $tenantId -and $config.subscriptionId -eq $subscriptionId -and $config.target.resourceGroupName -eq 'rg-tst-avd') 'Discovery should fill tenant, subscription and the default resource group.'
+    Assert-True ($config.schemaVersion -eq '1.6.0' -and $config.sessionHosts.imageSku -eq 'win11-24h2-avd-m365' -and $config.tenantId -eq $tenantId -and $config.subscriptionId -eq $subscriptionId -and $config.target.resourceGroupName -eq 'rg-tst-avd') 'Discovery should fill tenant, subscription, image and the default resource group.'
     Assert-True ($config.display.workspaceName -eq 'TST Workspace' -and $config.display.desktopName -eq 'TST Virtual Desktop' -and $config.fslogix.preventTempProfile -eq $false) "New should default the display names from the prefix and keep temporary profiles, got $($config.display | ConvertTo-Json -Compress) $($config.fslogix | ConvertTo-Json -Compress)"
     Assert-True ($config.foundation.createResourceGroup -and $config.foundation.network.addressSpace -eq '10.201.0.0/24' -and $config.network.resourceGroupName -eq 'rg-tst-avd') 'A new VNet should get the first range that does not overlap existing VNets (10.200.0.0/16 is taken).'
     Assert-True ($config.accessGroups.usersObjectId -eq '44444444-4444-4444-8444-444444444444' -and $config.accessGroups.adminsObjectId -eq '55555555-5555-4555-8555-555555555555' -and $config.identity.avdServicePrincipalObjectId -eq '66666666-6666-4666-8666-666666666666') 'Groups and the AVD service principal should be resolved from Entra.'
@@ -546,7 +656,7 @@ try {
     Assert-True ($result.Calls -match 'create-group:sg-tst-avd-users' -and $result.Calls -match 'create-group:sg-tst-avd-admins') 'Both groups should be created.'
     Assert-True ($result.Calls -match 'owner:aaaaaaaa-1111-4111-8111-111111111111=77777777' -and $result.Calls -match 'member:aaaaaaaa-1111-4111-8111-111111111111=77777777') 'The operator should own the new users group and be added as a test member.'
     Assert-True ($groupConfig.accessGroups.usersObjectId -eq 'aaaaaaaa-1111-4111-8111-111111111111' -and $groupConfig.accessGroups.adminsObjectId -eq 'bbbbbbbb-1111-4111-8111-111111111111') 'The new group IDs should be written to the configuration.'
-    Reset-State @{ MissingRg = $true; CreatedGroups = @([pscustomobject]@{ Id = 'aaaaaaaa-1111-4111-8111-111111111111'; DisplayName = 'sg-tst-avd-users' }) }
+    Reset-State @{ MissingRg = $true; CreatedGroups = @([pscustomobject]@{ Id = 'aaaaaaaa-1111-4111-8111-111111111111'; DisplayName = 'sg-tst-avd-users'; SecurityEnabled = $true }) }
     $result = Invoke-Cli @('-Mode', 'New', '-OutputFile', $withGroups, '-Force', '-SubscriptionId', 'Sandbox', '-Location', 'uksouth', '-Prefix', 'TST',
         '-NetworkMode', 'New', '-NewUsersGroup', 'sg-tst-avd-users', '-NewAdminsGroup', 'sg-tst-avd-admins',
         '-Hosting', 'Dedicated', '-Persona', 'Standard', '-Users', '2', '-ScalingPreset', 'None')
@@ -677,8 +787,7 @@ try {
     $result = Invoke-Cli @('-Mode', 'Deploy', '-ConfigurationFile', $discovered, '-AsSignedInUser', '-Approve', 'rg-tst-avd', '-RegistrationWaitMinutes', '0')
     Assert-True (-not $result.Error -and $result.Calls -eq 'read-secret,deploy-platform,create-token,deploy-hosts,remove-token,verify-hosts') "Deploy with display names failed or changed order: '$($result.Calls)' $($result.Error)"
     Assert-True ($global:AvdTest.PlatformParameters.workspaceFriendlyName -eq 'TST Workspace' -and $global:AvdTest.Post -contains 'desktop:TST-AppGroup/SessionDesktop=TST Virtual Desktop' -and $result.Output -match 'Desktop name: TST Virtual Desktop') 'Deploy should set the workspace and desktop names users see.'
-    Assert-True ($global:AvdTest.Post -contains 'restart:TSTSH-1' -and $global:AvdTest.Post -contains 'tag:TSTSH-1' -and $global:AvdTest.Post -notcontains 'restart:TSTSH-0' -and $global:AvdTest.HostParameters.preventTempProfile -eq $false) "Only hosts created by this run should restart and be tagged, got $($global:AvdTest.Post -join ', ')"
-    Assert-True ($result.Output -match 'Restart TSTSH-0 once when no one is signed in') 'An existing host with no recorded restart should get a manual restart task.'
+    Assert-True ($global:AvdTest.Post -contains 'restart:TSTSH-1' -and $global:AvdTest.Post -contains 'tag:TSTSH-1' -and $global:AvdTest.Post -contains 'restart:TSTSH-0' -and $global:AvdTest.HostParameters.preventTempProfile -eq $false) "New and recovered empty hosts should restart and be tagged, got $($global:AvdTest.Post -join ', ')"
     Assert-True ($result.Output -match 'Mode PostDeploy' -and $result.Output -match 'authentication for RDP') 'Without -PostDeploy, Deploy should list the Entra steps and suggest PostDeploy.'
     Reset-State @{ SecretExists = $true; FoundationDone = $true; Prefix = 'TSTSH'; ExistingVms = @('TSTSH-0', 'TSTSH-1'); VmTags = @{ 'TSTSH-0' = @{ 'avdv2-kerberos-restart' = 'x' }; 'TSTSH-1' = @{ 'avdv2-kerberos-restart' = 'x' } } }
     $result = Invoke-Cli @('-Mode', 'Deploy', '-ConfigurationFile', $discovered, '-AsSignedInUser', '-Approve', 'rg-tst-avd', '-RegistrationWaitMinutes', '0')
@@ -686,7 +795,33 @@ try {
     Reset-State @{ SecretExists = $true; FoundationDone = $true; Prefix = 'TSTSH'; DesktopRenameFails = $true }
     $result = Invoke-Cli @('-Mode', 'Deploy', '-ConfigurationFile', $discovered, '-AsSignedInUser', '-Approve', 'rg-tst-avd', '-RegistrationWaitMinutes', '0')
     Assert-True (-not $result.Error -and $result.Output -match "Set the desktop name: Update-AzWvdDesktop .* -FriendlyName 'TST Virtual Desktop'") 'A failed desktop rename should become a manual task, not fail the deployment.'
-    Write-Pass 'Deploy sets the workspace and desktop names and restarts only new FSLogix hosts.'
+    Write-Pass 'Deploy sets display names and safely restarts new and recovered untagged FSLogix hosts.'
+
+    $env:AVDV2_RETRY_DELAY_SECONDS = '0'
+    foreach ($sessionState in 'Active', 'Disconnected') {
+        Reset-State @{ SecretExists = $true; FoundationDone = $true; Prefix = 'TSTSH'; ExistingVms = @('TSTSH-0'); UserSessions = @{ 'TSTSH-0' = @([pscustomobject]@{ SessionState = $sessionState }) } }
+        $result = Invoke-Cli @('-Mode', 'Deploy', '-ConfigurationFile', $discovered, '-AsSignedInUser', '-Approve', 'rg-tst-avd')
+        Assert-True (-not $result.Error -and $global:AvdTest.Post -notcontains 'restart:TSTSH-0' -and $global:AvdTest.Post -notcontains 'tag:TSTSH-0' -and $result.Output -match 'session.s. prevented' -and -not $global:AvdTest.DrainedHosts.ContainsKey('TSTSH-0')) 'Active or disconnected users must prevent restart, with original admission restored.'
+    }
+    Reset-State @{ SecretExists = $true; FoundationDone = $true; Prefix = 'TSTSH'; RestartPending = 1; DrainedHosts = @{ 'TSTSH-0' = $true } }
+    $result = Invoke-Cli @('-Mode', 'Deploy', '-ConfigurationFile', $discovered, '-AsSignedInUser', '-Approve', 'rg-tst-avd')
+    $post = $global:AvdTest.Post.ToArray()
+    Assert-True (-not $result.Error -and [array]::IndexOf($post, 'admission:TSTSH-0=False') -lt [array]::IndexOf($post, 'sessions:TSTSH-0') -and [array]::IndexOf($post, 'sessions:TSTSH-0') -lt [array]::IndexOf($post, 'restart:TSTSH-0') -and [array]::IndexOf($post, 'restart-status') -lt [array]::IndexOf($post, 'tag:TSTSH-0') -and $global:AvdTest.DrainedHosts.ContainsKey('TSTSH-0')) 'Drain, session check, restart completion, tag and original drain restoration must be ordered.'
+    foreach ($flag in 'RestartFailed', 'RestartUnavailable', 'StaleHeartbeat') {
+        $flags = @{ SecretExists = $true; FoundationDone = $true; Prefix = 'TSTSH' }; $flags[$flag] = $true
+        Reset-State -Flags $flags
+        $result = Invoke-Cli @('-Mode', 'Deploy', '-ConfigurationFile', $discovered, '-AsSignedInUser', '-Approve', 'rg-tst-avd')
+        Assert-True ($result.Error -match 'remains in drain mode' -and $global:AvdTest.Post -notcontains 'tag:TSTSH-0' -and $global:AvdTest.DrainedHosts.ContainsKey('TSTSH-0')) 'Failed or unavailable restarts must fail visibly, stay drained and never record completion.'
+    }
+    Write-Pass 'recovery restarts protect active/disconnected sessions, preserve drain mode and only tag verified successful restarts.'
+
+    Reset-State @{ SecretExists = $true; FoundationDone = $true; Prefix = 'TSTSH'; RestartLocation = $true; RestartPending = 1 }
+    $result = Invoke-Cli @('-Mode', 'Deploy', '-ConfigurationFile', $discovered, '-AsSignedInUser', '-Approve', 'rg-tst-avd')
+    Assert-True (-not $result.Error -and $global:AvdTest.Post -contains 'tag:TSTSH-0') 'Location-based asynchronous restart must finish before tagging.'
+    Reset-State @{ SecretExists = $true; FoundationDone = $true; Prefix = 'TSTSH'; SessionReadFails = $true }
+    $result = Invoke-Cli @('-Mode', 'Deploy', '-ConfigurationFile', $discovered, '-AsSignedInUser', '-Approve', 'rg-tst-avd')
+    Assert-True ($result.Error -match 'Cannot enumerate user sessions' -and $global:AvdTest.Post -notcontains 'restart:TSTSH-0' -and -not $global:AvdTest.DrainedHosts.ContainsKey('TSTSH-0')) 'A failed session query must never be treated as an empty host.'
+    Write-Pass 'restart polling supports Location responses and refuses to restart when session enumeration fails.'
 
     $oldPrep = Join-Path $temporaryDirectory 'old-prep.ps1'
     [System.IO.File]::WriteAllText($oldPrep, "param([string]`$ProfileMode, [string]`$ProfilesPath, [string]`$RedirectionPath)`n")
@@ -738,6 +873,14 @@ try {
     Assert-True ($result.Output -match 'automatic setup failed' -and $post -contains 'storage:Disabled=' -and $post -contains 'role-remove:69566ab7-960f-475b-8e7c-b3118f30c6bd' -and $global:AvdTest.StorageState.properties.publicNetworkAccess -eq 'Disabled') "A failed ACL step must still restore the firewall and remove the role, got $($post -join ', ')"
     Write-Pass 'Report mode leaves Conditional Access alone, and a failed ACL step always restores the storage firewall.'
 
+    foreach ($flag in 'FilesMissing', 'AclMismatch') {
+        $flags = @{ Prefix = 'TSTSH' }; $flags[$flag] = $true
+        Reset-State -Flags $flags
+        $result = Invoke-Cli @('-Mode', 'PostDeploy', '-ConfigurationFile', $discovered, '-ConditionalAccess', 'Report')
+        Assert-True ($result.Output -match 'BLOCKER: Set FSLogix' -and $result.Output -notmatch 'Set and verified FSLogix' -and $global:AvdTest.Post -contains 'storage:Disabled=' -and $global:AvdTest.Post -contains 'role-remove:69566ab7-960f-475b-8e7c-b3118f30c6bd') 'Missing shares and ACL read-back mismatches must remain blockers and restore temporary access.'
+    }
+    Write-Pass 'Files requests preserve directory properties, verify root ACLs and report 404/read-back failures as blockers.'
+
     $hybrid = Get-Content -LiteralPath $happy -Raw | ConvertFrom-Json -AsHashtable
     Reset-State
     $result = Invoke-Cli @('-Mode', 'PostDeploy', '-ConfigurationFile', $happy, '-ConditionalAccess', 'Report')
@@ -761,7 +904,7 @@ try {
     Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force -ErrorAction SilentlyContinue
     foreach ($name in 'Get-AzContext', 'Connect-AzAccount', 'Set-AzContext', 'Get-AzResourceGroup', 'Get-AzVirtualNetwork', 'Get-AzRoleAssignment',
         'Get-AzResourceGroupDeploymentWhatIfResult', 'Get-AzWvdHostPool', 'Get-AzKeyVaultSecret', 'New-AzResourceGroupDeployment',
-        'Update-AzWvdHostPool', 'Get-AzWvdHostPoolRegistrationToken', 'Get-AzWvdSessionHost', 'Update-AzWvdSessionHost', 'Invoke-WebRequest',
+        'Update-AzWvdHostPool', 'Get-AzWvdHostPoolRegistrationToken', 'Get-AzWvdSessionHost', 'Get-AzWvdUserSession', 'Update-AzWvdSessionHost', 'Invoke-WebRequest',
         'Get-MgContext', 'Connect-MgGraph', 'Invoke-MgGraphRequest', 'Get-AzResourceProvider', 'Register-AzResourceProvider', 'Get-AzLocation',
         'Get-AzSubscription', 'Get-AzADGroup', 'Get-AzADServicePrincipal', 'Get-AzADUser', 'Get-AzResource', 'Get-AzKeyVault', 'Invoke-AzRestMethod',
         'Get-AzDeploymentWhatIfResult', 'New-AzDeployment', 'Test-AzResourceGroupDeployment', 'New-AzADGroup', 'New-AzADGroupOwner', 'Add-AzADGroupMember',

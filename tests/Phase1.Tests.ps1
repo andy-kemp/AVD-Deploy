@@ -209,7 +209,8 @@ try {
     $sharedPath = Join-Path $temporaryDirectory 'new-shared.json'
     $sharedText = (& $cliPath -Mode New -Offline -OutputFile $sharedPath -Hosting Shared -Persona Frontline -Users 120 -PeakConcurrencyPct 75 -UserIdentity Hybrid -ScalingPreset BusinessHours -TimeZone 'GMT Standard Time' -WorkdayStart '07:30' -WorkdayEnd '17:30' 6>$null) -join "`n"
     $shared = Get-Content -LiteralPath $sharedPath -Raw | ConvertFrom-Json -AsHashtable
-    Assert-True ($sharedText -match 'Configuration written' -and $shared.schemaVersion -eq '1.3.0' -and $shared.profile -eq 'AzureFilesHybridKerberos') 'New shared hybrid configuration was not written as 1.3.0 with hybrid FSLogix.'
+    Assert-True ($sharedText -match 'Configuration written' -and $shared.schemaVersion -eq '1.6.0' -and $shared.profile -eq 'AzureFilesHybridKerberos') 'New shared hybrid configuration was not written as 1.6.0 with hybrid FSLogix.'
+    Assert-True ($shared.sessionHosts.imageSku -eq 'win11-24h2-avd-m365' -and $sharedText -match 'office-365:win11-24h2-avd-m365:latest') 'New pooled configurations should default to the Microsoft 365 Apps image and show its exact reference.'
     Assert-True ($shared.hostPool.type -eq 'Pooled' -and $shared.hostPool.maxSessionLimit -eq 48 -and $shared.sessionHosts.count -eq 3) 'New shared Frontline 120 users @75% should be 3 hosts at 48 sessions.'
     Assert-True ($shared.scaling.schedules[0].rampUp.startTime -eq '06:30' -and $shared.scaling.schedules[0].offPeak.startTime -eq '18:30') 'Business-hours schedule did not follow the working day.'
     Assert-True ($shared.scaling.schedules[0].rampUp.capacityThresholdPct -eq 2 -and $shared.scaling.schedules[0].rampUp.loadBalancing -eq 'BreadthFirst') 'Shared Frontline (48 sessions) should start a spare host at a 2% threshold with breadth-first.'
@@ -222,9 +223,33 @@ try {
     $null = & $cliPath -Mode New -Offline -OutputFile $dedicatedPath -Hosting Dedicated -Persona Heavy -Users 8 -ScalingPreset BusinessHours -TimeZone 'GMT Standard Time' -WorkdayStart '08:00' -WorkdayEnd '18:00' 6>$null
     $dedicatedConfig = Get-Content -LiteralPath $dedicatedPath -Raw | ConvertFrom-Json -AsHashtable
     Assert-True ($dedicatedConfig.hostPool.type -eq 'Personal' -and $dedicatedConfig.sessionHosts.count -eq 8 -and $dedicatedConfig.sessionHosts.vmSize -eq 'Standard_D8s_v5') 'New dedicated Heavy 8 users should be 8 personal D8s_v5 hosts.'
+    Assert-True ($dedicatedConfig.sessionHosts.imageSku -eq 'win11-24h2-ent') 'Personal hosts must default to single-session Enterprise without Apps.'
     Assert-True ($dedicatedConfig.scaling.schedules[0].rampUp.autoStartHosts -eq 'None' -and $dedicatedConfig.scaling.schedules[0].peak.startVMOnConnect) 'Dedicated schedule should rely on Start VM on Connect.'
     Assert-True ($dedicatedConfig.profile -eq 'LocalProfile' -and -not $dedicatedConfig.ContainsKey('storage') -and -not $dedicatedConfig.identity.ContainsKey('kerberosDomainName') -and $dedicatedConfig.hostPool.assignmentType -eq 'Direct') 'Dedicated pools should use local profiles, no storage and direct assignment.'
     Write-Pass 'New mode writes a valid dedicated configuration with local profiles, direct assignment and personal schedules.'
+
+    $plainPath = Join-Path $temporaryDirectory 'new-plain-image.json'
+    $null = & $cliPath -Mode New -Offline -OutputFile $plainPath -Hosting Shared -ImageSku win11-24h2-avd -Persona Standard -Users 2 -PeakConcurrencyPct 100 -UserIdentity Hybrid -ScalingPreset None 6>$null
+    $plain = Get-Content -LiteralPath $plainPath -Raw | ConvertFrom-Json -AsHashtable
+    Assert-True ($plain.sessionHosts.imageSku -eq 'win11-24h2-avd') 'An explicit plain Windows choice must override the Apps default.'
+    $imageOnOldVersion = Copy-Configuration -Source $plain
+    $imageOnOldVersion.schemaVersion = '1.5.0'
+    Invoke-InvalidConfigurationCase -Value $imageOnOldVersion -Name 'image-on-old-version'
+    foreach ($sku in 'win11-24h2-avd', 'win11-24h2-avd-m365') {
+        $invalidImage = Copy-Configuration -Source $dedicatedConfig
+        $invalidImage.sessionHosts.imageSku = $sku
+        Invoke-InvalidConfigurationCase -Value $invalidImage -Name "personal-$sku"
+    }
+    $invalidImage = Copy-Configuration -Source $plain
+    $invalidImage.sessionHosts.imageSku = 'win11-24h2-ent'
+    Invoke-InvalidConfigurationCase -Value $invalidImage -Name 'pooled-single-session'
+    $invalidImage.sessionHosts.imageSku = 'unknown-image'
+    Invoke-InvalidConfigurationCase -Value $invalidImage -Name 'unknown-image'
+    Assert-Throws -Name 'questionnaire-image-mismatch' -Expected 'not supported for a Personal' -Action {
+        & $cliPath -Mode New -Offline -OutputFile (Join-Path $temporaryDirectory 'wrong-image.json') -Hosting Dedicated -ImageSku win11-24h2-avd-m365 -Persona Standard -Users 1 -ScalingPreset None 6>$null
+    }
+    Assert-True ($validText -match 'Windows-11:win11-24h2-avd:latest' -and $validText -match 'Apps: not included') 'Legacy configurations must retain their plain Windows image and make that visible.'
+    Write-Pass 'image selection is versioned, defaults to Apps for pooled hosts and rejects incompatible or unknown SKUs.'
 
     $cloudPath = Join-Path $temporaryDirectory 'new-cloud-only.json'
     $cloudText = (& $cliPath -Mode New -Offline -OutputFile $cloudPath -Hosting Shared -Persona Standard -Users 60 -PeakConcurrencyPct 80 -UserIdentity CloudOnly -ScalingPreset None 6>$null) -join "`n"
@@ -269,6 +294,7 @@ try {
     $expandText = (& $cliPath -Mode Expand -ConfigurationFile $expandPath -AddHosts 2 6>&1) -join "`n"
     $expanded = Get-Content -LiteralPath $expandPath -Raw | ConvertFrom-Json -AsHashtable
     Assert-True ($expanded.sessionHosts.count -eq 5 -and $expanded.sessionHosts.vmSize -eq $shared.sessionHosts.vmSize -and $expanded.hostPool.maxSessionLimit -eq 48) 'Expand -AddHosts 2 should add two hosts without changing size or session limit.'
+    Assert-True ($expanded.sessionHosts.imageSku -eq $shared.sessionHosts.imageSku -and $expanded.schemaVersion -eq '1.6.0') 'Expand must retain the saved image and schema version.'
     Assert-True ($expandText -match 'AVDHOST-3, AVDHOST-4') 'Expand should name the new hosts.'
     Write-Pass 'Expand adds pooled hosts in place with stable names and unchanged size.'
 
@@ -303,6 +329,7 @@ try {
     $null = & $cliPath -Mode AddUser -ConfigurationFile $assignPath -UserPrincipalName 'bob@example.com' -UserObjectId 'bbbbbbbb-0000-4000-8000-000000000002' 6>$null
     $twoUsers = Get-Content -LiteralPath $assignPath -Raw | ConvertFrom-Json -AsHashtable
     Assert-True ($twoUsers.sessionHosts.count -eq 2 -and $twoUsers.assignments[1].hostIndex -eq 1 -and $twoUsers.workload.users -eq 2) 'AddUser should add a new host when every host is assigned.'
+    Assert-True ($twoUsers.schemaVersion -eq '1.6.0' -and $twoUsers.sessionHosts.imageSku -eq 'win11-24h2-ent') 'AddUser must preserve the image and must not downgrade the schema.'
     Assert-Throws -Name 'adduser-duplicate' -Expected 'already assigned' -Action { & $cliPath -Mode AddUser -ConfigurationFile $assignPath -UserPrincipalName 'BOB@example.com' -UserObjectId 'dddddddd-0000-4000-8000-000000000004' 6>$null }
     Assert-Throws -Name 'adduser-pooled' -Expected 'AddUser needs a dedicated' -Action { & $cliPath -Mode AddUser -ConfigurationFile $sharedPath -UserPrincipalName 'eve@example.com' -UserObjectId 'eeeeeeee-0000-4000-8000-000000000005' 6>$null }
     Remove-Item Function:\Get-MgContext, Function:\Invoke-MgGraphRequest -ErrorAction SilentlyContinue
@@ -354,6 +381,9 @@ try {
 
     $hostsText = & $compileTemplate (Join-Path $v2Root 'infra/avd/session-hosts.bicep')
     Assert-True ($hostsText -match 'win11-24h2-ent' -and $hostsText -match 'win11-24h2-avd') 'Session hosts must select single-session images for personal pools and multi-session images for pooled pools.'
+    $hostsTemplate = $hostsText | ConvertFrom-Json -AsHashtable -Depth 64
+    $vm = @($hostsTemplate.resources | Where-Object type -eq 'Microsoft.Compute/virtualMachines')[0]
+    Assert-True ($hostsTemplate.parameters.imageSku.allowedValues -contains 'win11-24h2-avd-m365' -and $vm.properties.storageProfile.imageReference.sku -eq "[parameters('imageSku')]" -and $vm.properties.storageProfile.imageReference.offer -eq "[if(equals(parameters('imageSku'), 'win11-24h2-avd-m365'), 'office-365', 'Windows-11')]") 'Compiled VMs must use the chosen SKU and the office-365 offer only for the Apps image.'
     Assert-True ($hostsText -match '-ProfileMode Local' -and $hostsText -match '-ProfileMode FSLogix') 'Session hosts must pass the profile mode to the prep script.'
     Write-Pass 'session-host template selects the image and profile mode for the host pool type.'
 

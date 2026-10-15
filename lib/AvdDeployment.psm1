@@ -13,7 +13,7 @@ $script:RequiredAzCommands = [ordered]@{
     'Az.Resources'             = @('Get-AzResourceGroup', 'Get-AzResourceGroupDeploymentWhatIfResult', 'New-AzResourceGroupDeployment', 'Test-AzResourceGroupDeployment', 'Get-AzRoleAssignment',
         'New-AzRoleAssignment', 'Remove-AzRoleAssignment', 'Get-AzDeploymentWhatIfResult', 'New-AzDeployment', 'Get-AzResourceProvider', 'Register-AzResourceProvider', 'Get-AzResource', 'Get-AzADUser')
     'Az.Network'               = @('Get-AzVirtualNetwork')
-    'Az.DesktopVirtualization' = @('Get-AzWvdHostPool', 'Update-AzWvdHostPool', 'Get-AzWvdHostPoolRegistrationToken', 'Get-AzWvdSessionHost', 'Update-AzWvdSessionHost', 'Update-AzWvdDesktop')
+    'Az.DesktopVirtualization' = @('Get-AzWvdHostPool', 'Update-AzWvdHostPool', 'Get-AzWvdHostPoolRegistrationToken', 'Get-AzWvdSessionHost', 'Get-AzWvdUserSession', 'Update-AzWvdSessionHost', 'Update-AzWvdDesktop')
     'Az.KeyVault'              = @('Get-AzKeyVaultSecret', 'Get-AzKeyVault')
 }
 
@@ -53,6 +53,25 @@ function Get-AvdHostPoolName {
     return "$($Configuration.target.prefix)-HostPool"
 }
 
+function Test-AvdAccessGroups {
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Configuration)
+
+    foreach ($role in 'users', 'admins') {
+        $id = $Configuration.accessGroups["${role}ObjectId"]
+        try {
+            $group = Get-AzADGroup -ObjectId $id -ErrorAction Stop
+        } catch {
+            "Cannot verify AVD $role group '$id' in tenant $($Configuration.tenantId): $($_.Exception.Message). Confirm the group exists and your signed-in account can read it; correct accessGroups.${role}ObjectId and run Preview again."
+            continue
+        }
+        if (-not $group) {
+            "AVD $role group '$id' was not found in tenant $($Configuration.tenantId). Select or create the intended group, correct accessGroups.${role}ObjectId and run Preview again."
+        } elseif (-not $group.SecurityEnabled) {
+            "AVD $role group '$id' is not security-enabled. Select a security group in accessGroups.${role}ObjectId and run Preview again."
+        }
+    }
+}
+
 function Get-AvdPlatformParameters {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Configuration)
 
@@ -78,6 +97,31 @@ function Get-AvdPlatformParameters {
     return $parameters
 }
 
+function Get-AvdImageOptions {
+    param([Parameter(Mandatory)][ValidateSet('Pooled', 'Personal')][string]$HostPoolType)
+
+    $images = if ($HostPoolType -eq 'Personal') {
+        @('win11-24h2-ent', 'Windows 11 Enterprise 24H2 (single-session; install Apps through Intune)', 'Windows-11')
+    } else {
+        @('win11-24h2-avd-m365', 'Windows 11 Enterprise 24H2 multi-session with Microsoft 365 Apps', 'office-365'),
+        @('win11-24h2-avd', 'Windows 11 Enterprise 24H2 multi-session (without Microsoft 365 Apps)', 'Windows-11')
+    }
+    if ($HostPoolType -eq 'Personal') { $images = ,$images }
+    foreach ($image in $images) {
+        [ordered]@{ sku = $image[0]; label = $image[1]; publisher = 'MicrosoftWindowsDesktop'; offer = $image[2]; version = 'latest' }
+    }
+}
+
+function Get-AvdSessionHostImage {
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Configuration)
+
+    $type = if ($Configuration.Contains('hostPool')) { $Configuration.hostPool.type } else { 'Pooled' }
+    $sku = if ($Configuration.sessionHosts.Contains('imageSku')) { $Configuration.sessionHosts.imageSku } elseif ($type -eq 'Personal') { 'win11-24h2-ent' } else { 'win11-24h2-avd' }
+    $image = Get-AvdImageOptions -HostPoolType $type | Where-Object { $_.sku -ceq $sku }
+    if (-not $image) { throw "Image SKU '$sku' is not supported for a $type host pool. Select a compatible sessionHosts.imageSku." }
+    return $image
+}
+
 function Get-AvdSessionHostParameters {
     param(
         [Parameter(Mandatory)][System.Collections.IDictionary]$Configuration,
@@ -90,6 +134,7 @@ function Get-AvdSessionHostParameters {
         sessionHostPrefix             = $Configuration.sessionHosts.namePrefix
         hostPoolName                  = Get-AvdHostPoolName -Configuration $Configuration
         vmSize                        = $Configuration.sessionHosts.vmSize
+        imageSku                      = (Get-AvdSessionHostImage -Configuration $Configuration).sku
         numberOfHosts                 = [int]$Configuration.sessionHosts.count
         adminUsername                 = $Configuration.sessionHosts.adminUsername
         adminPassword                 = $AdminPassword
@@ -452,6 +497,7 @@ function Get-AvdComputeCapacity {
             }
             if ($short) { $blockers.Add("Alternatives for sessionHosts.vmSize:$(& $suggest)") }
         }
+        if ($blockers.Count -eq 0) { & $findAlternatives }
     } catch {
         $warnings.Add("Could not check VM size availability and vCPU quota for $size in $location. Deploy validates the session hosts before creating them.")
     }
@@ -484,6 +530,83 @@ function Get-AvdRegisteredHosts {
             Name         = $fullName
             AssignedUser = if ($sessionHost.PSObject.Properties['AssignedUser']) { [string]$sessionHost.AssignedUser } else { '' }
             Status       = if ($sessionHost.PSObject.Properties['Status']) { [string]$sessionHost.Status } else { '' }
+        }
+    }
+}
+
+function Restart-AvdPreparedHost {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Configuration,
+        [Parameter(Mandatory)][string]$VmName
+    )
+
+    $hostPool = Get-AvdHostPoolName -Configuration $Configuration
+    $rg = $Configuration.target.resourceGroupName
+    $hostState = @(Get-AzWvdSessionHost -ResourceGroupName $rg -HostPoolName $hostPool -ErrorAction Stop |
+        Where-Object { (($_.Name -split '/')[-1] -split '\.')[0] -eq $VmName })
+    if ($hostState.Count -ne 1 -or $null -eq $hostState[0].AllowNewSession) {
+        throw "Cannot determine admission state for $VmName; no restart was attempted."
+    }
+    $name = ($hostState[0].Name -split '/')[-1]
+    $allowNewSession = [bool]$hostState[0].AllowNewSession
+    $restoreAdmission = $true
+    Update-AzWvdSessionHost -ResourceGroupName $rg -HostPoolName $hostPool -Name $name -AllowNewSession:$false -ErrorAction Stop | Out-Null
+    try {
+        $sessions = @(Get-AzWvdUserSession -ResourceGroupName $rg -HostPoolName $hostPool -SessionHostName $name -ErrorAction Stop)
+        if ($sessions.Count -gt 0) {
+            return [pscustomobject]@{ Restarted = $false; Manual = "Restart $VmName when all active and disconnected sessions have signed out; $($sessions.Count) session(s) prevented the automatic restart." }
+        }
+
+        $vmRoot = "/subscriptions/$($Configuration.subscriptionId)/resourceGroups/$rg/providers/Microsoft.Compute/virtualMachines/$VmName"
+        $restoreAdmission = $false
+        Write-Host "Restarting $VmName in drain mode; waiting for Azure completion and AVD Available..."
+        $restartRequestedAt = [DateTimeOffset]::UtcNow
+        $restart = Invoke-AzRestMethod -Method POST -Path "$vmRoot/restart?api-version=2024-03-01" -ErrorAction Stop
+        if ($restart.StatusCode -notin 200, 202) { throw "Restart returned HTTP $($restart.StatusCode)." }
+        if ($restart.StatusCode -eq 202) {
+            $responseHeaders = @{}
+            foreach ($header in $restart.Headers.GetEnumerator()) {
+                $responseHeaders[$header.Key] = [string]($header.Value | Select-Object -First 1)
+            }
+            $operationUrl = [string]$responseHeaders['Azure-AsyncOperation']
+            $pollLocation = -not $operationUrl
+            if ($pollLocation) { $operationUrl = [string]$responseHeaders['Location'] }
+            if (-not $operationUrl) { throw 'Azure accepted the restart but supplied no operation URL; completion cannot be verified.' }
+            $operationPath = ([uri]$operationUrl).PathAndQuery
+            $delay = if ($env:AVDV2_RETRY_DELAY_SECONDS) { [int]$env:AVDV2_RETRY_DELAY_SECONDS } else { 10 }
+            for ($attempt = 0; ; $attempt++) {
+                if ($attempt -ge 60) { throw 'Timed out waiting for Azure restart completion.' }
+                $operation = Invoke-AzRestMethod -Method GET -Path $operationPath -ErrorAction Stop
+                if ($pollLocation -and $operation.StatusCode -eq 204) { break }
+                if ($pollLocation -and $operation.StatusCode -eq 202) { Start-Sleep -Seconds $delay; continue }
+                if ($operation.StatusCode -ne 200) { throw "Restart status returned HTTP $($operation.StatusCode)." }
+                if ($pollLocation -and [string]::IsNullOrWhiteSpace($operation.Content)) { break }
+                $state = ($operation.Content | ConvertFrom-Json).status
+                if ($state -eq 'Succeeded') { break }
+                if ($state -notin 'InProgress', 'Running', 'Accepted') { throw "Azure restart operation ended with status '$state'." }
+                Start-Sleep -Seconds $delay
+            }
+        }
+        $delay = if ($env:AVDV2_RETRY_DELAY_SECONDS) { [int]$env:AVDV2_RETRY_DELAY_SECONDS } else { 10 }
+        for ($attempt = 0; ; $attempt++) {
+            $hosts = @(Get-AzWvdSessionHost -ResourceGroupName $rg -HostPoolName $hostPool -ErrorAction Stop |
+                Where-Object { ($_.Name -split '/')[-1] -eq $name })
+            if ($hosts.Count -eq 1 -and $hosts[0].Status -eq 'Available' -and
+                $hosts[0].PSObject.Properties['LastHeartBeat'] -and $hosts[0].LastHeartBeat -and
+                [DateTimeOffset]$hosts[0].LastHeartBeat -ge $restartRequestedAt) { break }
+            if ($attempt -ge 60) { throw 'Timed out waiting for AVD Available after restart.' }
+            Start-Sleep -Seconds $delay
+        }
+        $tagBody = @{ operation = 'Merge'; properties = @{ tags = @{ $script:KerberosRestartTag = [DateTime]::UtcNow.ToString('o') } } } | ConvertTo-Json -Depth 4
+        $tag = Invoke-AzRestMethod -Method PATCH -Path "$vmRoot/providers/Microsoft.Resources/tags/default?api-version=2021-04-01" -Payload $tagBody -ErrorAction Stop
+        if ($tag.StatusCode -ne 200) { throw "Could not record the verified restart (tag update HTTP $($tag.StatusCode))." }
+        $restoreAdmission = $true
+        return [pscustomobject]@{ Restarted = $true; Manual = '' }
+    } catch {
+        throw "Automatic restart of $VmName failed: $($_.Exception.Message)$(if (-not $restoreAdmission) { ' The host remains in drain mode; investigate before allowing new sessions.' })"
+    } finally {
+        if ($restoreAdmission) {
+            Update-AzWvdSessionHost -ResourceGroupName $rg -HostPoolName $hostPool -Name $name -AllowNewSession:$allowNewSession -ErrorAction Stop | Out-Null
         }
     }
 }
@@ -540,6 +663,11 @@ function Invoke-AvdPreview {
     $changes = [System.Collections.Generic.List[object]]::new()
 
     Write-Host "Preview as $($context.Account.Id) in subscription $($Configuration.subscriptionId). No changes will be made."
+    if ($context.Account.Type -eq 'ManagedService') {
+        $warnings.Add('Access group existence is not checked through Graph as the deployment managed identity. Verify the configured groups with a signed-in operator; no Graph permissions are requested for this identity.')
+    } else {
+        foreach ($issue in (Test-AvdAccessGroups -Configuration $Configuration)) { $blockers.Add($issue) }
+    }
     $foundation = if ($Configuration.Contains('foundation')) { $Configuration.foundation } else { $null }
     $createsNetwork = $foundation -and $foundation.Contains('network')
     $createsKeyVault = $foundation -and $foundation.Contains('keyVault')
@@ -620,6 +748,13 @@ function Invoke-AvdPreview {
     if ($Configuration.profile -eq 'AzureFilesEntraKerberosCloudOnly') {
         $warnings.Add('Cloud-only FSLogix is a Microsoft PREVIEW feature and needs the admin prerequisites in ADR 0011.')
     }
+    $image = Get-AvdSessionHostImage -Configuration $Configuration
+    Write-Host "Session host image: $($image.label) [$($image.publisher):$($image.offer):$($image.sku):$($image.version)]."
+    if ($image.sku -like '*-m365') {
+        $warnings.Add('Microsoft 365 Apps on pooled hosts requires eligible licensing and shared computer activation. Manage application policies and updates through Intune; this deployment does not configure Intune app assignments.')
+    } else {
+        $warnings.Add('This image does not include Microsoft 365 Apps. Deploy Apps separately (for example through Intune) if required; this deployment does not configure app assignments.')
+    }
     if ($Configuration.Contains('display')) {
         $shownWorkspace = if ($Configuration.display.Contains('workspaceName')) { $Configuration.display.workspaceName } else { "$($Configuration.target.prefix) Workspace" }
         $shownDesktop = if ($Configuration.display.Contains('desktopName')) { $Configuration.display.desktopName } else { 'SessionDesktop' }
@@ -682,7 +817,7 @@ function Invoke-AvdPreview {
         configurationSha = Get-AvdSha256 -Path $ConfigurationPath
         templateSha      = Get-AvdTemplateHash
         artifactSha      = $Configuration.artifacts.sessionHostPrepSha256.ToLowerInvariant()
-        sessionHosts     = [ordered]@{ count = [int]$Configuration.sessionHosts.count; vmSize = $Configuration.sessionHosts.vmSize }
+        sessionHosts     = [ordered]@{ count = [int]$Configuration.sessionHosts.count; vmSize = $Configuration.sessionHosts.vmSize; image = $image }
         assignments      = @($assignments | ForEach-Object { [ordered]@{ host = "$($Configuration.sessionHosts.namePrefix)-$($_.hostIndex)"; userPrincipalName = $_.userPrincipalName; objectId = $_.objectId } })
         changes          = @($changes)
         blockers         = @($blockers)
@@ -809,6 +944,10 @@ function Invoke-AvdDeploy {
     if ($approval -ne $resourceGroupName) {
         throw 'Deployment not approved. Nothing was changed.'
     }
+    if ($context.Account.Type -ne 'ManagedService') {
+        $groupIssues = @(Test-AvdAccessGroups -Configuration $Configuration)
+        if ($groupIssues.Count -gt 0) { throw "Access group validation failed before any deployment changes:`n - $($groupIssues -join "`n - ")" }
+    }
 
     $artifact = Test-AvdArtifactDigest -Configuration $Configuration
     if (-not $artifact.Ok) { throw $artifact.Message }
@@ -922,25 +1061,15 @@ function Invoke-AvdDeploy {
     }
     Write-Host "All $($expected.Count) session host(s) registered."
 
-    # The Kerberos ticket setting written by host prep needs a restart. Restart VMs this run created and tag them;
-    # existing untagged VMs may have users signed in, so they become a manual task instead.
+    # Recover untagged hosts from partial runs too, but never interrupt a user session.
     $restarted = [System.Collections.Generic.List[string]]::new()
     if ($Configuration.profile -ne 'LocalProfile') {
-        $vmRoot = "/subscriptions/$($Configuration.subscriptionId)/resourceGroups/$resourceGroupName/providers/Microsoft.Compute/virtualMachines"
-        foreach ($vmName in @($expected | Where-Object { $_ -notin $existingVms })) {
-            $restart = Invoke-AzRestMethod -Method POST -Path "$vmRoot/$vmName/restart?api-version=2024-03-01"
-            if ($restart.StatusCode -in 200, 202) {
-                $restarted.Add($vmName)
-                $tagBody = @{ operation = 'Merge'; properties = @{ tags = @{ $script:KerberosRestartTag = [DateTime]::UtcNow.ToString('o') } } } | ConvertTo-Json -Depth 4
-                $null = Invoke-AzRestMethod -Method PATCH -Path "$vmRoot/$vmName/providers/Microsoft.Resources/tags/default?api-version=2021-04-01" -Payload $tagBody
-            } else {
-                $manualTasks.Add("Restart $vmName once so its Microsoft Entra Kerberos setting applies (automatic restart returned HTTP $($restart.StatusCode)).")
-            }
+        foreach ($vmName in @($expected | Where-Object { $_ -notin $existingVms -or $_ -in $unrestartedVms })) {
+            $result = Restart-AvdPreparedHost -Configuration $Configuration -VmName $vmName
+            if ($result.Restarted) { $restarted.Add($vmName) }
+            if ($result.Manual) { $manualTasks.Add($result.Manual) }
         }
-        if ($restarted.Count -gt 0) { Write-Host "Restarting $($restarted -join ', ') so the Microsoft Entra Kerberos setting applies (back in a few minutes)." }
-        foreach ($vmName in @($expected | Where-Object { $_ -in $unrestartedVms })) {
-            $manualTasks.Add("Restart $vmName once when no one is signed in (no restart is recorded since host prep set the Microsoft Entra Kerberos setting), then tag it $($script:KerberosRestartTag).")
-        }
+        $registered = @(Get-AvdRegisteredHosts -Configuration $Configuration)
     }
 
     foreach ($task in (Get-AvdManualTasks -Configuration $Configuration)) { $manualTasks.Add($task) }
@@ -991,4 +1120,4 @@ function Invoke-AvdDeploy {
     }
 }
 
-Export-ModuleMember -Function Invoke-AvdPreview, Invoke-AvdDeploy, Test-AvdVmCapacity, Get-AvdPlatformParameters, Get-AvdSessionHostParameters, Get-AvdFoundationParameters, Get-AvdTemplateHash, New-AvdAdminPassword, Test-AvdNameAvailable, Connect-AvdAzure, Assert-AvdAzureTooling, Get-AvdOperator
+Export-ModuleMember -Function Invoke-AvdPreview, Invoke-AvdDeploy, Test-AvdVmCapacity, Get-AvdImageOptions, Get-AvdSessionHostImage, Get-AvdPlatformParameters, Get-AvdSessionHostParameters, Get-AvdFoundationParameters, Get-AvdTemplateHash, New-AvdAdminPassword, Test-AvdNameAvailable, Connect-AvdAzure, Assert-AvdAzureTooling, Get-AvdOperator

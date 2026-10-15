@@ -262,8 +262,32 @@ function Set-AvdShareRootPermission {
         'x-ms-date'                = [DateTime]::UtcNow.ToString('R')
         'x-ms-file-request-intent' = 'backup'
         'x-ms-file-permission'     = $Sddl
+        'x-ms-file-attributes'     = 'preserve'
+        'x-ms-file-creation-time'  = 'preserve'
+        'x-ms-file-last-write-time' = 'preserve'
     }
-    Invoke-WebRequest -Method PUT -Uri "https://$Account.file.core.windows.net/$Share`?restype=directory&comp=properties" -Headers $headers -SkipHeaderValidation -UseBasicParsing -ErrorAction Stop | Out-Null
+    $rootUri = "https://$Account.file.core.windows.net/$Share/"
+    $set = Invoke-WebRequest -Method PUT -Uri "${rootUri}?restype=directory&comp=properties" -Headers $headers -SkipHeaderValidation -UseBasicParsing -ErrorAction Stop
+    if ($set.StatusCode -ne 200) { throw "Setting $Share root permissions returned HTTP $($set.StatusCode)." }
+    $headers.Remove('x-ms-file-permission')
+    $root = Invoke-WebRequest -Method GET -Uri "${rootUri}?restype=directory" -Headers $headers -SkipHeaderValidation -UseBasicParsing -ErrorAction Stop
+    if ($root.StatusCode -ne 200) { throw "Reading $Share root properties returned HTTP $($root.StatusCode)." }
+    $key = [string]($root.Headers['x-ms-file-permission-key'] | Select-Object -First 1)
+    if (-not $key) { throw "The $Share root returned no permission key; ACL verification is incomplete." }
+    $headers['x-ms-file-permission-key'] = $key
+    $permission = Invoke-WebRequest -Method GET -Uri "https://$Account.file.core.windows.net/${Share}?restype=share&comp=filepermission" -Headers $headers -SkipHeaderValidation -UseBasicParsing -ErrorAction Stop
+    if ($permission.StatusCode -ne 200) { throw "Reading $Share root permissions returned HTTP $($permission.StatusCode)." }
+    $body = if ($permission.Content -is [byte[]]) { [System.Text.Encoding]::UTF8.GetString($permission.Content) } else { [string]$permission.Content }
+    $descriptor = $body | ConvertFrom-Json -AsHashtable
+    if (-not $descriptor['permission']) { throw "The $Share permission read-back returned no security descriptor." }
+    $actual = [System.Security.AccessControl.RawSecurityDescriptor]::new([string]$descriptor['permission'])
+    $expected = [System.Security.AccessControl.RawSecurityDescriptor]::new($Sddl)
+    $sections = [System.Security.AccessControl.AccessControlSections]::Owner -bor
+        [System.Security.AccessControl.AccessControlSections]::Group -bor
+        [System.Security.AccessControl.AccessControlSections]::Access
+    if ($actual.GetSddlForm($sections) -ne $expected.GetSddlForm($sections)) {
+        throw "The $Share root owner, group or DACL does not match the requested permissions after read-back."
+    }
 }
 
 function Set-AvdProfileSharePermissions {
@@ -347,9 +371,9 @@ function Set-AvdProfileSharePermissions {
                 }
             }
         }
-        $done.Add('Set FSLogix-recommended permissions on the profiles share (users create their own folder; only the owner and admins can open it) and read-only access to redirections. Existing profile folders keep their current permissions.')
+        $done.Add('Set and verified FSLogix-recommended permissions on the profiles share (users create their own folder; only the owner and admins can open it) and read-only access to redirections. Existing profile folders keep their current permissions.')
     } catch {
-        $manual.Add("Set FSLogix folder permissions on $account (automatic setup failed: $($_.Exception.Message)). The share's default permissions still let FSLogix work, but users can open each other's profile folders.")
+        $manual.Add("BLOCKER: Set FSLogix folder permissions on $account (automatic setup failed: $($_.Exception.Message)). Do not allow user access until profile isolation is verified; default permissions may let users open each other's profile folders.")
     } finally {
         if ($opened) {
             $restore = Invoke-AzRestMethod -Method PATCH -Path "$storageId`?$apiVersion" -Payload $restoreBody

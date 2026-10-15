@@ -1,18 +1,18 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://schemas.example.invalid/avd/config/v1.5.0",
+  "$id": "https://schemas.example.invalid/avd/config/v1.6.0",
   "title": "AVD deployment configuration",
-  "description": "Non-secret customer-scoped input for the V2 AVD CLI. Secret values are never configuration properties. 1.1.0 adds optional host-pool scaling; 1.2.0 adds persona-based workload sizing and shared (pooled) or dedicated (personal) host pools; 1.3.0 adds cloud-only FSLogix (preview), local profiles for dedicated hosts and named user assignments; 1.4.0 adds an optional foundation stage that creates the resource group, network, Key Vault and deployment identity; 1.5.0 adds display names users see and FSLogix sign-in protection. Earlier versions remain valid.",
+  "description": "Non-secret customer-scoped input for the V2 AVD CLI. Secret values are never configuration properties. 1.1.0 adds optional host-pool scaling; 1.2.0 adds persona-based workload sizing and shared (pooled) or dedicated (personal) host pools; 1.3.0 adds cloud-only FSLogix (preview), local profiles for dedicated hosts and named user assignments; 1.4.0 adds an optional foundation stage that creates the resource group, network, Key Vault and deployment identity; 1.5.0 adds display names users see and FSLogix sign-in protection; 1.6.0 adds host-pool-compatible Windows 11 image selection. Earlier versions remain valid and retain plain Windows images when imageSku is omitted.",
   "type": "object",
   "additionalProperties": false,
   "allOf": [
     {
       "if": { "required": ["scaling"] },
-      "then": { "properties": { "schemaVersion": { "enum": ["1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0"] } } }
+      "then": { "properties": { "schemaVersion": { "enum": ["1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0"] } } }
     },
     {
       "if": { "anyOf": [{ "required": ["workload"] }, { "required": ["hostPool"] }] },
-      "then": { "properties": { "schemaVersion": { "enum": ["1.2.0", "1.3.0", "1.4.0", "1.5.0"] } } }
+      "then": { "properties": { "schemaVersion": { "enum": ["1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0"] } } }
     },
     {
       "if": {
@@ -21,15 +21,19 @@
           { "properties": { "profile": { "enum": ["AzureFilesEntraKerberosCloudOnly", "LocalProfile"] } } }
         ]
       },
-      "then": { "properties": { "schemaVersion": { "enum": ["1.3.0", "1.4.0", "1.5.0"] } } }
+      "then": { "properties": { "schemaVersion": { "enum": ["1.3.0", "1.4.0", "1.5.0", "1.6.0"] } } }
     },
     {
       "if": { "required": ["foundation"] },
-      "then": { "properties": { "schemaVersion": { "enum": ["1.4.0", "1.5.0"] } } }
+      "then": { "properties": { "schemaVersion": { "enum": ["1.4.0", "1.5.0", "1.6.0"] } } }
     },
     {
       "if": { "anyOf": [{ "required": ["display"] }, { "required": ["fslogix"] }] },
-      "then": { "properties": { "schemaVersion": { "const": "1.5.0" } } }
+      "then": { "properties": { "schemaVersion": { "enum": ["1.5.0", "1.6.0"] } } }
+    },
+    {
+      "if": { "properties": { "sessionHosts": { "required": ["imageSku"] } }, "required": ["sessionHosts"] },
+      "then": { "properties": { "schemaVersion": { "const": "1.6.0" } } }
     },
     {
       "if": { "properties": { "profile": { "const": "LocalProfile" } } },
@@ -69,6 +73,7 @@
       "then": {
         "properties": {
           "profile": { "const": "LocalProfile" },
+          "sessionHosts": { "properties": { "imageSku": { "const": "win11-24h2-ent" } } },
           "scaling": { "properties": { "schedules": { "items": { "$ref": "#/definitions/personalSchedule" } } } }
         }
       },
@@ -76,6 +81,7 @@
         "not": { "required": ["assignments"] },
         "properties": {
           "profile": { "enum": ["AzureFilesHybridKerberos", "AzureFilesEntraKerberosCloudOnly"] },
+          "sessionHosts": { "properties": { "imageSku": { "enum": ["win11-24h2-avd", "win11-24h2-avd-m365"] } } },
           "scaling": { "properties": { "schedules": { "items": { "$ref": "#/definitions/pooledSchedule" } } } }
         }
       }
@@ -97,7 +103,7 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "enum": ["1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0"]
+      "enum": ["1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0"]
     },
     "tenantId": {
       "type": "string",
@@ -371,6 +377,11 @@
           "minLength": 1,
           "maxLength": 64,
           "pattern": "^[A-Za-z0-9_]+$"
+        },
+        "imageSku": {
+          "type": "string",
+          "enum": ["win11-24h2-ent", "win11-24h2-avd", "win11-24h2-avd-m365"],
+          "description": "MicrosoftWindowsDesktop marketplace image, version latest. Personal: Windows-11/win11-24h2-ent. Pooled: Windows-11/win11-24h2-avd or office-365/win11-24h2-avd-m365. Omitted retains legacy plain Windows behaviour. New pooled questionnaires default to the Microsoft 365 Apps image."
         },
         "adminUsername": {
           "type": "string",

@@ -18,6 +18,7 @@ Restart the terminal after installing Bicep so `bicep` is on `PATH`.
 
 - **Owner** on the sandbox subscription. The script registers resource providers, creates the resource group and makes role assignments.
 - AVD users and admins groups. Either pick existing ones, or let `New` create them (you become owner and can add yourself to the users group). Creating groups needs your tenant to allow users to create security groups, or a Groups Administrator role.
+  Operator Preview verifies both saved IDs resolve to security groups in the configured tenant; operator Deploy checks again before any deployment changes. Missing groups or a denied lookup block instead of failing later with `PrincipalNotFound`. Fix the IDs in the local configuration and run a fresh Preview. Deployment managed identities do not request Graph permissions for this check; verify their groups separately as an operator. A successful foundation followed by a failed platform does not require deleting the foundation or rotating its password.
 - Autoscale needs *Desktop Virtualization Power On Off Contributor* for the Azure Virtual Desktop service principal at subscription scope; AVD refuses to create a scaling plan without it. Deploy grants it in the foundation stage, which is why you need Owner.
 - For `-PostDeploy` (step 5), an Entra admin role that can consent to the Graph scopes it requests: Cloud Application Administrator for the storage app, plus Conditional Access Administrator (or Security Administrator) for the Conditional Access exclusion. Global Administrator covers both.
 - The `Microsoft.Graph.Authentication` PowerShell module for the Graph steps.
@@ -86,13 +87,13 @@ Type the resource group name to approve. Deploy then runs these steps:
 3. **Platform:** host pool, app group, workspace (with your workspace name), FSLogix storage with private endpoint and DNS, scaling plan, and role assignments. Then the desktop tile is renamed to your desktop name.
 4. **Session host validation:** Azure validates the host deployment with a placeholder token before a real one exists. Failures show the nested Azure error codes (such as `QuotaExceeded` or `SkuNotAvailable`) rather than a generic preflight message.
 5. **Registration token:** a 4-hour token, used by the session hosts, then always revoked.
-6. **Session hosts:** deployed with the token, then registration is checked for up to 10 minutes. New shared-pool hosts are then restarted once so their Microsoft Entra Kerberos setting applies.
+6. **Session hosts:** deployed with the token, then registration is checked for up to 10 minutes. New and recovered untagged FSLogix hosts are drained and restarted once so their Microsoft Entra Kerberos setting applies, but only if no active or disconnected user sessions remain. Deploy waits for the Azure restart operation to complete and AVD to return `Available` before tagging completion and restoring the previous drain state. Busy hosts become manual tasks; failed or timed-out restarts remain drained and stop Deploy. Already tagged hosts are skipped.
 7. **Dedicated pools only:** assign hosts to named users and add them to the users group with your delegated Graph permission.
 8. **Post-deployment configuration (`-PostDeploy`, [ADR 0015](adr/0015-post-deploy-configuration.md)):** signs in to Microsoft Graph and:
    - enables Microsoft Entra authentication for RDP for the tenant (needed for the hosts' single sign-on);
    - grants admin consent to the storage account's Entra app, adds the cloud-group tag (cloud-only) and the `privatelink` identifier URIs;
    - lists the Conditional Access policies that require MFA for all resources and, **after you type `yes`**, excludes only the storage app from them. Microsoft-managed policies can't be changed and are listed instead, as are policies with device or privileged-role conditions you should review;
-   - sets FSLogix's recommended folder permissions on the profile share. The storage firewall is opened to **your public IP only** for a minute or two, with a temporary data role, then closed again and the role removed, even if something fails;
+   - sets FSLogix's recommended folder permissions on the profile share and verifies the root ACL by reading it back. The storage firewall is opened to **your public IP only** for a minute or two, with a temporary data role, then closed again and the role removed, even if something fails. Any ACL failure is a **blocker before user access**, not a successful readiness check. Existing profile folders keep their previous permissions and require a separate isolation check;
    - checks each host is Entra joined and Intune managed, and runs a new enough Windows build.
 9. **Manual tasks:** whatever couldn't be done automatically, plus a sign-in test.
 
