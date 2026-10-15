@@ -1,0 +1,8 @@
+{
+  "description": "Release-pinned artifacts used by avd.ps1 -Mode New. Update together with any change to scripts/session-host-prep.ps1: commit and push it, then record the commit-pinned raw URI and the SHA-256 of the downloaded (LF) file. The current pin is the last release published from the AzureVirtualDesktop repository (v2/ folder); repin to this repository after its first push.",
+  "sessionHostPrep": {
+    "commit": "bf238b616a5f51d23cd9ca18a3927ddcac14834b",
+    "uri": "https://raw.githubusercontent.com/andy-kemp/AzureVirtualDesktop/bf238b616a5f51d23cd9ca18a3927ddcac14834b/v2/scripts/session-host-prep.ps1",
+    "sha256": "f7b706622b94f6eacfadb7d47695b985717ef66e388e4c2bb9e11ec3e7b21d62"
+  }
+}
