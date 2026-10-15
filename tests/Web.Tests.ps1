@@ -29,7 +29,7 @@ $port = $listener.LocalEndpoint.Port
 $listener.Stop()
 
 $bootstrap = @'
-param($CliPath, $Port, $OutputFile)
+param($CliPath, $Port, $OutputFile, $AnswersFile)
 $ErrorActionPreference = 'Stop'
 foreach ($name in 'Get-AzResourceGroupDeploymentWhatIfResult', 'New-AzResourceGroupDeployment', 'Test-AzResourceGroupDeployment', 'Get-AzRoleAssignment',
     'New-AzRoleAssignment', 'Remove-AzRoleAssignment', 'Get-AzAccessToken', 'Update-AzWvdDesktop', 'Get-AzDeploymentWhatIfResult',
@@ -88,6 +88,7 @@ function global:New-AzADGroupOwner { param($GroupId, $OwnerId, $ErrorAction) }
 function global:Add-AzADGroupMember { param($TargetGroupObjectId, $MemberObjectId, $ErrorAction, $WarningAction) }
 function global:Get-AzADUser { param([switch]$SignedIn, $ErrorAction) [pscustomobject]@{ Id = '77777777-0000-4000-8000-000000000007' } }
 function global:Get-AzADServicePrincipal { param($ApplicationId, $ErrorAction) [pscustomobject]@{ Id = '66666666-6666-4666-8666-666666666666' } }
+if ($AnswersFile) { & $CliPath -Mode New -AnswersFile $AnswersFile -OutputFile $OutputFile -Force; return }
 & $CliPath -Mode Web -NoBrowser -Port $Port -OutputFile $OutputFile
 '@
 $bootstrapPath = Join-Path $temporaryDirectory 'web-bootstrap.ps1'
@@ -227,6 +228,36 @@ try {
     $shutdown = Invoke-Wizard -Path '/api/shutdown' -Method POST -Headers $auth -Body @{}
     Assert-True ($shutdown.Status -eq 200 -and $process.WaitForExit(15000)) 'Shutdown should stop the wizard.'
     Write-Pass 'the wizard closes from the page.'
+
+    # Portal answers file (ADR 0017): New -AnswersFile uses the wizard's generate path after schema validation.
+    $answersPath = Join-Path $temporaryDirectory 'portal-answers.json'
+    $portalOutput = Join-Path $temporaryDirectory 'portal-avd.json'
+    $portalAnswers = [ordered]@{
+        answersVersion = '1.0.0'; SubscriptionId = '22222222-2222-4222-8222-222222222222'; Location = 'uksouth'; Prefix = 'PRT'; ResourceGroupName = 'rg-prt-avd'
+        NetworkMode = 'Existing'; VirtualNetworkName = 'vnet-existing'; SessionHostSubnet = 'hosts'; PrivateEndpointSubnet = 'endpoints'
+        UsersGroup = '44444444-4444-4444-8444-444444444444'; AdminsGroup = '55555555-5555-4555-8555-555555555555'
+        Hosting = 'Shared'; Persona = 'Standard'; Users = 10; PeakConcurrencyPct = 100; ImageSku = 'win11-24h2-avd'; VmSize = 'Standard_D8as_v5'
+        UserIdentity = 'CloudOnly'; ProfileFailureAction = 'TempProfile'; ScalingPreset = 'None'; WorkspaceName = 'Portal Workspace'; DesktopName = 'Portal Desktop'
+    }
+    $runAnswers = {
+        [System.IO.File]::WriteAllText($answersPath, ($portalAnswers | ConvertTo-Json))
+        $text = (& (Get-Process -Id $PID).Path -NoProfile -File $bootstrapPath (Join-Path $v2Root 'avd.ps1') 0 $portalOutput $answersPath 2>&1) -join "`n"
+        [pscustomobject]@{ ExitCode = $LASTEXITCODE; Text = $text }
+    }
+    $run = & $runAnswers
+    Assert-True ($run.ExitCode -eq 0) "New -AnswersFile failed: $($run.Text)"
+    $config = Get-Content -LiteralPath $portalOutput -Raw | ConvertFrom-Json -AsHashtable
+    Assert-True ($config.schemaVersion -eq '1.6.0' -and $config.network.virtualNetworkName -eq 'vnet-existing' -and $config.network.sessionHostSubnetName -eq 'hosts' -and $config.accessGroups.adminsObjectId -eq '55555555-5555-4555-8555-555555555555' -and $config.sessionHosts.vmSize -eq 'Standard_D8as_v5' -and -not $config.ContainsKey('scaling') -and $config.display.desktopName -eq 'Portal Desktop') 'An answers file should produce the same validated configuration as the wizard.'
+    Assert-True ($run.Text -match 'Next: \.\\avd\.ps1 -Mode Preview') 'New -AnswersFile should print the Preview command.'
+    Remove-Item -LiteralPath $portalOutput
+    $portalAnswers.Remove('AdminsGroup')
+    $run = & $runAnswers
+    Assert-True ($run.ExitCode -ne 0 -and $run.Text -match 'does not satisfy' -and -not (Test-Path -LiteralPath $portalOutput)) "An incomplete answers file must be rejected before generation, got $($run.Text)"
+    $portalAnswers.AdminsGroup = '55555555-5555-4555-8555-555555555555'
+    $portalAnswers.Prefix = '1bad'
+    $run = & $runAnswers
+    Assert-True ($run.ExitCode -ne 0 -and $run.Text -match 'Prefix') "An invalid prefix must be rejected by the answers schema, got $($run.Text)"
+    Write-Pass 'portal answers files are schema-validated and generate the same configuration as the wizard.'
 
     Write-Host "$passed web wizard tests passed."
 } finally {

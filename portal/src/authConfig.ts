@@ -21,4 +21,6 @@ export const msalConfig: Configuration = {
 };
 
 export const armScope = 'https://management.azure.com/user_impersonation';
+// Requested only when the group picker is used; it needs admin consent once per tenant.
+export const groupReadScope = 'https://graph.microsoft.com/GroupMember.Read.All';
 export const loginRequest = { scopes: ['User.Read', armScope] };

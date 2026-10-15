@@ -5,7 +5,8 @@ import react from '@vitejs/plugin-react';
 // Two entries: the app, and the MSAL v5 redirect bridge that the app registration's redirect URI points at.
 export default defineConfig({
   plugins: [react()],
-  server: { port: 5173, strictPort: true },
+  // The sizing profiles are shared with avd.ps1 from ../contracts.
+  server: { port: 5173, strictPort: true, fs: { allow: ['.', '../contracts'] } },
   preview: { port: 5173, strictPort: true },
   build: {
     rollupOptions: {

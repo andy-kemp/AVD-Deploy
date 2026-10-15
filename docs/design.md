@@ -52,6 +52,8 @@ pwsh -NoProfile -File ./tests/Web.Tests.ps1
 
 It writes the same configuration as `-Mode New` (default `sandbox/avd.json`). After Preview passes it shows the Deploy command, which you run in PowerShell. Use `-Port` or `-OutputFile` to change the defaults. In the terminal, `-Mode New -VmSize <size>` overrides the recommended size the same way.
 
+The [portal](../portal/README.md) ([ADR 0017](adr/0017-portal-mvp-browser-discovery.md)) asks the same questions after an Entra sign-in and downloads an answers file. `-Mode New -AnswersFile <file> -OutputFile <config>` checks it against the [answers schema](../contracts/avd-answers.schema.json) and generates the configuration with the wizard's code, so groups are created and names checked as you.
+
 The sample uses reserved/example values and is not deployable. The schema is the machine contract, not the intended questionnaire: the [guided pilot experience](deployment-experience.md) derives ordinary values and keeps secret URIs/artifact digests out of the user flow. The target resource group and VNet/subnets must already exist for the current build-only slice. `Build` compiles the two V2 AVD entry points without Azure login or resource changes.
 
 ### Sizing questionnaire

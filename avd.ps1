@@ -56,6 +56,8 @@ param(
     # PostDeploy: public IPv4 of this machine, allowed on the storage firewall while folder permissions are set (detected if omitted).
     [ValidatePattern('^\d{1,3}(\.\d{1,3}){3}$')]
     [string]$OperatorPublicIp,
+    # New: answers downloaded from the portal (contracts/avd-answers.schema.json), used instead of prompts and discovery parameters.
+    [string]$AnswersFile,
     # PostDeploy: Ask before excluding the storage app from MFA Conditional Access policies, Exclude without asking, or Report only.
     [ValidateSet('Ask', 'Exclude', 'Report')]
     [string]$ConditionalAccess = 'Ask',
@@ -116,9 +118,9 @@ $canonicalKeyOrder = @(
 
 function Get-SchemaErrorDetail {
     # Test-Json reports only true/false on newer PowerShell, so ask the bundled JsonSchema.Net library for details.
-    param([Parameter(Mandatory)][string]$Json)
+    param([Parameter(Mandatory)][string]$Json, [string]$SchemaPath = $schemaPath)
     try {
-        $schema = [Json.Schema.JsonSchema]::FromText([System.IO.File]::ReadAllText($schemaPath))
+        $schema = [Json.Schema.JsonSchema]::FromText([System.IO.File]::ReadAllText($SchemaPath))
         $options = [Json.Schema.EvaluationOptions]::new()
         $options.OutputFormat = [Json.Schema.OutputFormat]::List
         $result = $schema.Evaluate([System.Text.Json.Nodes.JsonNode]::Parse($Json), $options)
@@ -224,6 +226,26 @@ function Read-ValidatedConfiguration {
     }
 
     return $configuration
+}
+
+function Read-ValidatedAnswers {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Answers file was not found: $Path"
+    }
+    $answersSchemaPath = Join-Path $PSScriptRoot 'contracts/avd-answers.schema.json'
+    $json = [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $Path).Path)
+    if (-not (Test-Json -Json $json -SchemaFile $answersSchemaPath -ErrorAction SilentlyContinue)) {
+        $details = @(Get-SchemaErrorDetail -Json $json -SchemaPath $answersSchemaPath)
+        $detailText = if ($details.Count -gt 0) { "`n - " + ($details -join "`n - ") } else { '' }
+        throw "Answers file does not satisfy '$answersSchemaPath'.$detailText"
+    }
+    $answers = ConvertFrom-Json -InputObject $json -AsHashtable -Depth 4
+    if ($answers.Contains('UsersGroup') -and $answers.Contains('AdminsGroup') -and $answers.UsersGroup -eq $answers.AdminsGroup) {
+        throw 'The AVD users and admins groups must be different.'
+    }
+    return $answers
 }
 
 function Test-ScalingConfiguration {
@@ -1297,7 +1319,21 @@ if ($Mode -eq 'New') {
     if (-not $OutputFile) {
         throw 'New mode requires -OutputFile for the generated configuration.'
     }
-    $ConfigurationFile = New-SizedConfiguration -BasePath $ConfigurationFile -DestinationPath $OutputFile
+    if ($AnswersFile) {
+        # Portal answers run through the same prompt-free path as the local web wizard.
+        Assert-AvdAzureTooling
+        if (-not (Get-AzContext)) {
+            Write-Host 'Signing in to Azure...'
+            Connect-AzAccount -WarningAction SilentlyContinue | Out-Null
+        }
+        $answers = Read-ValidatedAnswers -Path $AnswersFile
+        $answers.Overwrite = [bool]$Force
+        $generated = Invoke-WebGenerate -Answers $answers -Destination ([System.IO.Path]::GetFullPath($OutputFile))
+        foreach ($line in $generated.log) { Write-Host $line }
+        $ConfigurationFile = $generated.path
+    } else {
+        $ConfigurationFile = New-SizedConfiguration -BasePath $ConfigurationFile -DestinationPath $OutputFile
+    }
 } elseif ($Mode -in 'Expand', 'AddUser') {
     if (-not $PSBoundParameters.ContainsKey('ConfigurationFile')) {
         throw "$Mode needs -ConfigurationFile pointing at the saved configuration of the existing V2 deployment."
