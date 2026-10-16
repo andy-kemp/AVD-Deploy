@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AVD Deploy - sign-in check</title>
+<style>
+  :root { --accent: #0f6cbd; --bg: #f5f7fa; --card: #fff; --text: #1b1b1b; --muted: #5c6670; --ok: #107c10; --bad: #a4262c; --border: #e1e4e8; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16181c; --card: #1f2227; --text: #eceef1; --muted: #9aa3ad; --border: #33373d; --ok: #54b054; --bad: #e0656b; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  header { background: var(--accent); color: #fff; padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  main { max-width: 860px; margin: 20px auto 60px; padding: 0 16px; }
+  section { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; margin-bottom: 16px; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  td { padding: 6px 4px; border-top: 1px solid var(--border); vertical-align: top; word-break: break-word; }
+  td:first-child { color: var(--muted); width: 38%; }
+  .ok { color: var(--ok); font-weight: 600; }
+  .bad { color: var(--bad); font-weight: 600; }
+  pre { background: var(--bg); padding: 10px; border-radius: 6px; overflow-x: auto; font-size: 12px; margin: 0; }
+  p { color: var(--muted); font-size: 14px; margin: 0 0 10px; }
+</style>
+</head>
+<body>
+<header><h1>AVD Deploy</h1><div id="user-button"></div></header>
+<main>
+  <section id="status"><h2>Sign-in check</h2><p id="message">Loading Clerk…</p><div id="sign-in"></div></section>
+  <section id="checks" hidden><h2>Checks</h2><table><tbody id="check-rows"></tbody></table></section>
+  <section id="claims" hidden><h2>Session token claims</h2><p>Decoded in your browser for checking only. The real API verifies the signature.</p><pre id="claims-json"></pre></section>
+</main>
+<script>
+  // The publishable key is public (it is in every Clerk front end). Paste yours here: Clerk Dashboard > API keys.
+  const PUBLISHABLE_KEY = 'pk_live_Y2xlcmsuYW5keWtlbXAuY29tJA';
+  const EXPECTED_ISSUER_HOST = 'clerk.andykemp.com';
+
+  const el = (id) => document.getElementById(id);
+
+  function frontendApiFromKey(key) {
+    // A publishable key is pk_live_ + base64("<frontend api host>$").
+    const encoded = key.split('_').slice(2).join('_');
+    return atob(encoded).replace(/\$$/, '');
+  }
+
+  function loadScript(src, attrs) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src; s.crossOrigin = 'anonymous'; s.async = true;
+      for (const [k, v] of Object.entries(attrs || {})) s.setAttribute(k, v);
+      s.onload = resolve; s.onerror = () => reject(new Error('Could not load ' + src));
+      document.head.appendChild(s);
+    });
+  }
+
+  function decodeJwt(token) {
+    const part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(decodeURIComponent(escape(atob(part.padEnd(part.length + (4 - part.length % 4) % 4, '=')))));
+  }
+
+  function addRow(label, value, pass) {
+    const tr = document.createElement('tr');
+    const a = document.createElement('td'); a.textContent = label;
+    const b = document.createElement('td');
+    if (pass !== undefined) {
+      const tag = document.createElement('span');
+      tag.className = pass ? 'ok' : 'bad';
+      tag.textContent = pass ? 'PASS ' : 'CHECK ';
+      b.appendChild(tag);
+    }
+    b.appendChild(document.createTextNode(value));
+    tr.append(a, b);
+    el('check-rows').appendChild(tr);
+  }
+
+  async function main() {
+    if (PUBLISHABLE_KEY.includes('REPLACE_ME')) {
+      el('message').textContent = 'Add your publishable key to PUBLISHABLE_KEY in index.html, then redeploy.';
+      return;
+    }
+    const fapi = frontendApiFromKey(PUBLISHABLE_KEY);
+    await loadScript(`https://${fapi}/npm/@clerk/ui@1/dist/ui.browser.js`);
+    await loadScript(`https://${fapi}/npm/@clerk/clerk-js@6/dist/clerk.browser.js`, { 'data-clerk-publishable-key': PUBLISHABLE_KEY });
+    await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor } });
+    const clerk = window.Clerk;
+
+    if (!clerk.isSignedIn) {
+      el('message').textContent = 'Not signed in here. If you are already signed in on another andykemp.com site, the session is not being shared.';
+      clerk.mountSignIn(el('sign-in'));
+      return;
+    }
+
+    clerk.mountUserButton(el('user-button'));
+    el('message').textContent = 'Signed in.';
+    el('checks').hidden = false;
+
+    const token = await clerk.session.getToken();
+    const claims = decodeJwt(token);
+    el('claims').hidden = false;
+    el('claims-json').textContent = JSON.stringify(claims, null, 2);
+
+    const user = clerk.user;
+    addRow('User', `${user.fullName || ''} <${user.primaryEmailAddress ? user.primaryEmailAddress.emailAddress : 'no email'}>`);
+    addRow('Frontend API', fapi, fapi === EXPECTED_ISSUER_HOST);
+    addRow('Issuer (iss)', claims.iss || '(missing)', claims.iss === `https://${EXPECTED_ISSUER_HOST}`);
+    addRow('Authorised party (azp)', claims.azp || '(missing)', claims.azp === location.origin);
+    addRow('This page origin', location.origin);
+
+    const org = clerk.organization;
+    const tokenOrg = claims.o || {};
+    addRow('Active organisation', org ? `${org.name} (${org.id})` : 'None selected', !!org);
+    const role = tokenOrg.rol || claims.org_role || '(none)';
+    addRow('Role in token', role);
+    const perms = [].concat(tokenOrg.per ? String(tokenOrg.per).split(',') : [], claims.org_permissions || []);
+    addRow('Permissions in token', perms.length ? perms.join(', ') : '(none)');
+    const membership = org ? (await user.getOrganizationMemberships()).data.find((m) => m.organization.id === org.id) : null;
+    const avdPerms = membership ? membership.permissions.filter((p) => p.startsWith('org:avd:')) : [];
+    addRow('AVD permissions (org:avd:*)', avdPerms.length ? avdPerms.join(', ') : 'None yet: add the avd feature and roles in Clerk', avdPerms.length > 0);
+    if (!org) {
+      const sw = document.createElement('div');
+      el('checks').appendChild(sw);
+      clerk.mountOrganizationSwitcher(sw);
+    }
+  }
+
+  main().catch((e) => { el('message').textContent = 'Error: ' + e.message; });
+</script>
+</body>
+</html>
