@@ -1,6 +1,6 @@
 # ADR 0003: Group-assigned app roles
 
-Status: Accepted. Date: 2026-10-11.
+Status: Accepted for self-hosted installs; superseded for the hosted service by [ADR 0018](0018-accounts-and-tenant-connection.md) (proposed 2026-10-16). Date: 2026-10-11.
 
 ## Context
 

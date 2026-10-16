@@ -1,3 +1,11 @@
 # Local sandbox configurations and Preview plans can contain real tenant, subscription and user IDs.
 sandbox/
 *.plan.json
+
+# Configurations downloaded from the portal contain real tenant and subscription IDs.
+/*-config.json
+# Local settings, installed packages, build output and pinned tools.
+.env.local
+node_modules/
+dist/
+.tools/

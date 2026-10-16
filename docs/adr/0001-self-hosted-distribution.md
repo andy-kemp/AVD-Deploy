@@ -1,6 +1,6 @@
 # ADR 0001: Self-hosted distribution
 
-Status: Accepted. Date: 2026-10-11.
+Status: Accepted for self-hosted installs; superseded for the hosted service by [ADR 0017](0017-hosted-multi-tenant-service.md) (proposed 2026-10-16). Date: 2026-10-11.
 
 ## Context
 
