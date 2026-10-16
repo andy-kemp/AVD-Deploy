@@ -41,6 +41,9 @@ const entra: Entra = {
     return { ...fake.signIn, tenantId: fake.signIn.tenantId || tenantId };
   },
   appIsConsented: async () => fake.consented,
+  linkSignInUrl: () => 'https://login.example/link',
+  redeemLink: async () => { throw new Error('not used'); },
+  armToken: async () => { throw new Error('not used'); },
 };
 
 before(async () => {

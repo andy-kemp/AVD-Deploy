@@ -34,7 +34,7 @@ export interface ConnectState {
   state: string;
   orgId: string;
   userId: string;
-  stage: 'consent' | 'verify';
+  stage: 'consent' | 'verify' | 'link';
   tenantId?: string;
   codeVerifier?: string;
   nonce?: string;
@@ -49,6 +49,19 @@ export interface TenantConnection {
   consentedByObjectId: string;
   consentedByUsername: string;
   connectedAt: string;
+}
+
+/** An operator's own Microsoft account in the organisation's connected tenant (one per organisation and user). */
+export interface AccountLink {
+  orgId: string;
+  userId: string;
+  tenantId: string;
+  objectId: string;
+  username: string;
+  mfa: boolean;
+  /** Refresh token sealed with the Key Vault key (sealer.ts). Never returned by the API. */
+  sealedRefreshToken: string;
+  linkedAt: string;
 }
 
 export interface Store {
@@ -66,6 +79,9 @@ export interface Store {
   getTenantConnection(orgId: string): Promise<TenantConnection | null>;
   /** Records the connection; fails with 409 if another organisation already owns the tenant. */
   connectTenant(record: TenantConnection): Promise<void>;
+  getAccountLink(orgId: string, userId: string): Promise<AccountLink | null>;
+  putAccountLink(record: AccountLink): Promise<void>;
+  deleteAccountLink(orgId: string, userId: string): Promise<void>;
 }
 
 const tenantTaken = () => new HttpError(409, 'tenant-taken', 'This Microsoft tenant is already connected to another organisation. Contact hello@andykemp.com.');
@@ -132,17 +148,34 @@ export class MemoryStore implements Store {
     this.tenantOwners.set(record.tenantId, record.orgId);
     this.connections.set(record.orgId, { ...record });
   }
+
+  private links = new Map<string, AccountLink>();
+
+  async getAccountLink(orgId: string, userId: string) {
+    const record = this.links.get(`${orgId}/${userId}`);
+    return record ? { ...record } : null;
+  }
+
+  async putAccountLink(record: AccountLink) {
+    this.links.set(`${record.orgId}/${record.userId}`, { ...record });
+  }
+
+  async deleteAccountLink(orgId: string, userId: string) {
+    this.links.delete(`${orgId}/${userId}`);
+  }
 }
 
 // Organisations: PartitionKey = Clerk org ID, RowKey = 'organisation'. Member roles: PartitionKey = org ID, RowKey = user ID.
 // Connect states: PartitionKey = state, RowKey = 'state'. Tenant connections: PartitionKey = org ID, RowKey = 'tenant'.
 // Tenant owners: PartitionKey = Entra tenant ID, RowKey = 'owner' (one organisation per tenant).
+// Account links: PartitionKey = org ID, RowKey = user ID.
 export class TableStore implements Store {
   private organisations: TableClient;
   private memberRoles: TableClient;
   private connectStates: TableClient;
   private tenantConnections: TableClient;
   private tenantOwners: TableClient;
+  private accountLinks: TableClient;
 
   private constructor(client: (table: string) => TableClient) {
     this.organisations = client('organisations');
@@ -150,6 +183,7 @@ export class TableStore implements Store {
     this.connectStates = client('connectstates');
     this.tenantConnections = client('tenantconnections');
     this.tenantOwners = client('tenantowners');
+    this.accountLinks = client('accountlinks');
   }
 
   static async create(storage: Exclude<Config['storage'], { kind: 'memory' }>): Promise<TableStore> {
@@ -158,7 +192,7 @@ export class TableStore implements Store {
         ? TableClient.fromConnectionString(storage.connectionString, table, { allowInsecureConnection: storage.connectionString.includes('127.0.0.1') })
         : new TableClient(`https://${storage.accountName}.table.core.windows.net`, table, new DefaultAzureCredential());
     const store = new TableStore(client);
-    for (const table of [store.organisations, store.memberRoles, store.connectStates, store.tenantConnections, store.tenantOwners]) {
+    for (const table of [store.organisations, store.memberRoles, store.connectStates, store.tenantConnections, store.tenantOwners, store.accountLinks]) {
       try {
         await table.createTable();
       } catch (e) {
@@ -304,5 +338,28 @@ export class TableStore implements Store {
     }
     const { orgId, ...rest } = record;
     await this.tenantConnections.upsertEntity({ partitionKey: orgId, rowKey: 'tenant', ...rest }, 'Replace');
+  }
+
+  async getAccountLink(orgId: string, userId: string) {
+    try {
+      const e = await this.accountLinks.getEntity<Omit<AccountLink, 'orgId' | 'userId'>>(orgId, userId);
+      return { orgId, userId, tenantId: e.tenantId, objectId: e.objectId, username: e.username, mfa: Boolean(e.mfa), sealedRefreshToken: e.sealedRefreshToken, linkedAt: e.linkedAt };
+    } catch (e) {
+      if (e instanceof RestError && e.statusCode === 404) return null;
+      throw e;
+    }
+  }
+
+  async putAccountLink(record: AccountLink) {
+    const { orgId, userId, ...rest } = record;
+    await this.accountLinks.upsertEntity({ partitionKey: orgId, rowKey: userId, ...rest }, 'Replace');
+  }
+
+  async deleteAccountLink(orgId: string, userId: string) {
+    try {
+      await this.accountLinks.deleteEntity(orgId, userId);
+    } catch (e) {
+      if (!(e instanceof RestError && e.statusCode === 404)) throw e;
+    }
   }
 }

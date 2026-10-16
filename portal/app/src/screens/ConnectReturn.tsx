@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { message, useApi } from '../api';
 import { Hero } from '../Chrome';
 
-export function ConnectReturn({ step, onConnected }: { step: 'consented' | 'verify'; onConnected: () => Promise<void> }) {
+export function ConnectReturn({ step, onConnected }: { step: 'consented' | 'verify' | 'link'; onConnected: () => Promise<void> }) {
   const api = useApi();
   const [error, setError] = useState<string | null>(null);
   const sent = useRef(false);
@@ -26,7 +26,7 @@ export function ConnectReturn({ step, onConnected }: { step: 'consented' | 'veri
           const { url } = await api<{ url: string }>('POST', '/tenants/connect/consented', body);
           window.location.assign(url);
         } else {
-          await api('POST', '/tenants/connect/verify', body);
+          await api('POST', step === 'link' ? '/accounts/link/complete' : '/tenants/connect/verify', body);
           window.history.replaceState(null, '', '/');
           await onConnected();
         }
@@ -38,8 +38,11 @@ export function ConnectReturn({ step, onConnected }: { step: 'consented' | 'veri
 
   return (
     <>
-      <Hero eyebrow="Connect tenant" title={error ? "The tenant wasn't connected" : step === 'consented' ? 'Thanks — one more sign-in' : 'Checking your sign-in'}>
-        {error ? null : step === 'consented' ? 'Consent was recorded. Next, sign in to the same tenant so we can confirm it is yours.' : 'Confirming the tenant and your administrator role…'}
+      <Hero
+        eyebrow={step === 'link' ? 'Link account' : 'Connect tenant'}
+        title={error ? (step === 'link' ? "Your account wasn't linked" : "The tenant wasn't connected") : step === 'consented' ? 'Thanks — one more sign-in' : 'Checking your sign-in'}
+      >
+        {error ? null : step === 'consented' ? 'Consent was recorded. Next, sign in to the same tenant so we can confirm it is yours.' : step === 'link' ? 'Linking your work account…' : 'Confirming the tenant and your administrator role…'}
       </Hero>
       {error && (
         <section className="card">

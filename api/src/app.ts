@@ -1,9 +1,11 @@
 // HTTP routes for Get started, organisation approval and Connect tenant (docs/hosted-service.md).
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { HttpError, type Principal, type Verifier } from './auth.ts';
-import { codeChallenge, consentAdminRoles, EntraError, randomToken, type Entra } from './entra.ts';
+import { arm as defaultArm, ArmError, type Arm } from './arm.ts';
+import { codeChallenge, consentAdminRoles, EntraError, randomToken, RelinkNeededError, type Entra } from './entra.ts';
+import type { Sealer } from './sealer.ts';
 import { permissionsFor, type AvdPermission } from './roles.ts';
-import type { ConnectState, OrganisationRecord, OrganisationStatus, Store, TenantConnection } from './store.ts';
+import type { AccountLink, ConnectState, OrganisationRecord, OrganisationStatus, Store, TenantConnection } from './store.ts';
 
 export interface AppOptions {
   verify: Verifier;
@@ -11,6 +13,9 @@ export interface AppOptions {
   akcAdminUserIds: Set<string>;
   /** Absent when the multi-tenant Entra app isn't configured yet; Connect tenant then reports that. */
   entra?: Entra;
+  /** Seals operators' refresh tokens; required for Link account. */
+  sealer?: Sealer;
+  arm?: Arm;
   now?: () => Date;
 }
 
@@ -64,6 +69,10 @@ function organisationView(record: OrganisationRecord) {
   return { id: record.orgId, name: record.name, status: record.status, requestedAt: record.requestedAt, decidedAt: record.decidedAt ?? null };
 }
 
+function linkView(record: AccountLink | null) {
+  return record ? { username: record.username, linkedAt: record.linkedAt, mfa: record.mfa } : null;
+}
+
 function tenantView(record: TenantConnection | null) {
   return record ? { tenantId: record.tenantId, name: record.tenantName, connectedAt: record.connectedAt, consentedBy: record.consentedByUsername } : null;
 }
@@ -106,8 +115,6 @@ export function createApp(options: AppOptions) {
     }
     return state;
   }
-
-  const expiry = () => new Date(now().getTime() + connectStateMinutes * 60_000).toISOString();
 
   async function connectStart(principal: Principal) {
     const entra = requireEntra();
@@ -166,11 +173,144 @@ export function createApp(options: AppOptions) {
     return { tenant: tenantView(record), consentedAs: adminRole };
   }
 
+  const expiry = () => new Date(now().getTime() + connectStateMinutes * 60_000).toISOString();
+
+  // Short-lived Azure tokens per linked operator, so the sealed refresh token isn't opened on every request.
+  const armTokens = new Map<string, { token: string; expiresAt: number }>();
+  const arm = options.arm ?? defaultArm;
+
+  function requireSealer(): Sealer {
+    if (!options.sealer) throw new HttpError(503, 'not-configured', 'Linking accounts is not available yet.');
+    return options.sealer;
+  }
+
+  async function requireTenant(orgId: string) {
+    const tenant = await options.store.getTenantConnection(orgId);
+    if (!tenant) throw new HttpError(409, 'no-tenant', 'Connect your Microsoft tenant first.');
+    return tenant;
+  }
+
+  async function linkStart(principal: Principal) {
+    const entra = requireEntra();
+    requireSealer();
+    const { orgId } = await requirePermission(principal, 'read');
+    const tenant = await requireTenant(orgId);
+    const state = randomToken();
+    const nonce = randomToken();
+    const codeVerifier = randomToken();
+    await options.store.putConnectState({ state, orgId, userId: principal.userId, stage: 'link', tenantId: tenant.tenantId, nonce, codeVerifier, expiresAt: expiry() });
+    return { url: entra.linkSignInUrl(tenant.tenantId, state, nonce, codeChallenge(codeVerifier)) };
+  }
+
+  async function linkComplete(principal: Principal, body: Record<string, unknown>) {
+    const entra = requireEntra();
+    const sealer = requireSealer();
+    const { orgId } = await requirePermission(principal, 'read');
+    const state = await takeState(principal, body.state, 'link');
+    if (typeof body.error === 'string' && body.error) throw new HttpError(400, 'sign-in-failed', consentErrorMessage(body.error, String(body.errorDescription ?? '')));
+    if (typeof body.code !== 'string' || !body.code || body.code.length > 4096) throw new HttpError(400, 'invalid-code', 'Microsoft did not return a sign-in code.');
+    const tenant = await requireTenant(orgId);
+    if (tenant.tenantId !== state.tenantId) throw new HttpError(409, 'tenant-changed', 'The connected tenant changed while you were signing in. Try again.');
+    let signIn;
+    try {
+      signIn = await entra.redeemLink(tenant.tenantId, body.code, state.codeVerifier!, state.nonce!);
+    } catch (e) {
+      throw new HttpError(400, 'sign-in-failed', e instanceof EntraError ? e.message : 'The sign-in could not be verified.');
+    }
+    if (signIn.tenantId.toLowerCase() !== tenant.tenantId) {
+      throw new HttpError(400, 'tenant-mismatch', `Sign in with your work account in ${tenant.tenantName || 'the connected tenant'}.`);
+    }
+    const record: AccountLink = {
+      orgId,
+      userId: principal.userId,
+      tenantId: tenant.tenantId,
+      objectId: signIn.objectId,
+      username: signIn.username,
+      mfa: signIn.mfa,
+      sealedRefreshToken: await sealer.seal(signIn.refreshToken),
+      linkedAt: now().toISOString(),
+    };
+    await options.store.putAccountLink(record);
+    armTokens.set(`${orgId}/${principal.userId}`, { token: signIn.accessToken, expiresAt: signIn.expiresAt });
+    return { link: linkView(record) };
+  }
+
+  async function unlink(principal: Principal) {
+    if (!principal.orgId) throw new HttpError(400, 'no-organisation', 'Choose an organisation first.');
+    await options.store.deleteAccountLink(principal.orgId, principal.userId);
+    armTokens.delete(`${principal.orgId}/${principal.userId}`);
+    return { link: null };
+  }
+
+  /** An Azure token for the caller's own linked account in the organisation's connected tenant. */
+  async function operatorArmToken(principal: Principal): Promise<{ token: string; link: AccountLink }> {
+    const entra = requireEntra();
+    const sealer = requireSealer();
+    const { orgId } = await requirePermission(principal, 'read');
+    const tenant = await requireTenant(orgId);
+    const link = await options.store.getAccountLink(orgId, principal.userId);
+    if (!link) throw new HttpError(409, 'not-linked', 'Link your Microsoft work account first.');
+    const key = `${orgId}/${principal.userId}`;
+    if (link.tenantId !== tenant.tenantId) {
+      await options.store.deleteAccountLink(orgId, principal.userId);
+      armTokens.delete(key);
+      throw new HttpError(409, 'relink-needed', 'Your organisation connected a different tenant. Link your account again.');
+    }
+    const cached = armTokens.get(key);
+    if (cached && cached.expiresAt - 5 * 60_000 > Date.now()) return { token: cached.token, link };
+    try {
+      const fresh = await entra.armToken(link.tenantId, await sealer.open(link.sealedRefreshToken));
+      if (fresh.refreshToken) await options.store.putAccountLink({ ...link, sealedRefreshToken: await sealer.seal(fresh.refreshToken) });
+      armTokens.set(key, { token: fresh.accessToken, expiresAt: fresh.expiresAt });
+      return { token: fresh.accessToken, link };
+    } catch (e) {
+      if (e instanceof RelinkNeededError) {
+        // Never retried with another identity (ADR 0005): the operator signs in again.
+        await options.store.deleteAccountLink(orgId, principal.userId);
+        armTokens.delete(key);
+        throw new HttpError(409, 'relink-needed', 'Microsoft needs you to sign in again. Link your account again.');
+      }
+      throw e;
+    }
+  }
+
+  function armFailure(e: unknown): never {
+    if (e instanceof ArmError) throw new HttpError(e.status === 403 ? 403 : 502, e.status === 403 ? 'azure-forbidden' : 'azure-error', e.message);
+    throw e;
+  }
+
+  async function mySubscriptions(principal: Principal) {
+    const { token, link } = await operatorArmToken(principal);
+    try {
+      return (await arm.listSubscriptions(token))
+        .filter((s) => s.tenantId?.toLowerCase() === link.tenantId)
+        .map((s) => ({ id: s.subscriptionId, name: s.displayName, state: s.state }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    } catch (e) {
+      armFailure(e);
+    }
+  }
+
+  async function regions(principal: Principal, subscriptionId: string | null) {
+    if (!subscriptionId || !guidPattern.test(subscriptionId)) throw new HttpError(400, 'invalid-subscription', 'Choose a subscription.');
+    const subscriptions = await mySubscriptions(principal);
+    if (!subscriptions.some((s) => s.id.toLowerCase() === subscriptionId.toLowerCase())) {
+      throw new HttpError(404, 'subscription-not-found', 'That subscription is not one you can see in the connected tenant.');
+    }
+    const { token } = await operatorArmToken(principal);
+    try {
+      return { regions: await arm.listHostPoolRegions(token, subscriptionId) };
+    } catch (e) {
+      armFailure(e);
+    }
+  }
+
   async function me(principal: Principal) {
     if (!principal.orgId) return { userId: principal.userId, isAkcAdmin: isAkcAdmin(principal), organisation: null };
     const record = await options.store.getOrganisation(principal.orgId);
     const roles = record?.status === 'approved' ? ((await options.store.getMemberRoles(principal.orgId, principal.userId))?.roles ?? []) : [];
     const tenant = record?.status === 'approved' ? tenantView(await options.store.getTenantConnection(principal.orgId)) : null;
+    const link = tenant ? linkView(await options.store.getAccountLink(principal.orgId, principal.userId)) : null;
     return {
       userId: principal.userId,
       isAkcAdmin: isAkcAdmin(principal),
@@ -179,7 +319,7 @@ export function createApp(options: AppOptions) {
         clerkRole: principal.orgRole ?? null,
         // ADR 0018: only Clerk's organisation admin may request AVD; no other Clerk role means anything here.
         canRequest: principal.orgRole === 'admin',
-        avd: record ? { ...organisationView(record), roles, permissions: permissionsFor(roles), tenant, connectAvailable: !!options.entra } : null,
+        avd: record ? { ...organisationView(record), roles, permissions: permissionsFor(roles), tenant, link, connectAvailable: !!options.entra, linkAvailable: !!options.entra && !!options.sealer } : null,
       },
     };
   }
@@ -238,6 +378,11 @@ export function createApp(options: AppOptions) {
       if (route === 'POST /api/tenants/connect/start') return send(res, 200, await connectStart(principal));
       if (route === 'POST /api/tenants/connect/consented') return send(res, 200, await connectConsented(principal, await readJson(req)));
       if (route === 'POST /api/tenants/connect/verify') return send(res, 200, await connectVerify(principal, await readJson(req)));
+      if (route === 'POST /api/accounts/link/start') return send(res, 200, await linkStart(principal));
+      if (route === 'POST /api/accounts/link/complete') return send(res, 200, await linkComplete(principal, await readJson(req)));
+      if (route === 'DELETE /api/accounts/link') return send(res, 200, await unlink(principal));
+      if (route === 'GET /api/discovery/subscriptions') return send(res, 200, { subscriptions: await mySubscriptions(principal) });
+      if (route === 'GET /api/discovery/regions') return send(res, 200, await regions(principal, url.searchParams.get('subscriptionId')));
       const decision = /^POST \/api\/admin\/organisations\/([^/]+)\/(approve|decline)$/.exec(route);
       if (decision) {
         if (!orgIdPattern.test(decision[1])) throw new HttpError(400, 'invalid-organisation', 'Not a Clerk organisation ID.');

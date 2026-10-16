@@ -16,6 +16,8 @@ export interface Config {
   portalOrigin: string;
   /** Client ID of the API's user-assigned managed identity, its credential for the Entra app. */
   managedIdentityClientId: string;
+  /** Key Vault key that wraps operators' refresh tokens. Empty: an in-memory key (local only; links don't survive a restart). */
+  keyVaultKeyId: string;
   storage: { kind: 'memory' } | { kind: 'table'; accountName: string } | { kind: 'connection-string'; connectionString: string };
 }
 
@@ -53,6 +55,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     entraClientId: (env.ENTRA_CLIENT_ID ?? '').trim(),
     portalOrigin: (env.PORTAL_ORIGIN ?? authorizedParties[0]).replace(/\/+$/, ''),
     managedIdentityClientId: (env.AZURE_CLIENT_ID ?? '').trim(),
+    keyVaultKeyId: (env.KEY_VAULT_KEY_ID ?? '').trim(),
     storage,
   };
 }

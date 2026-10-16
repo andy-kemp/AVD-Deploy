@@ -32,6 +32,7 @@ var suffix = uniqueString(resourceGroup().id, 'control-plane')
 var tableDataContributor = '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'
 var blobDataReader = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
 var blobDataContributor = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
+var keyVaultCryptoUser = '12338af0-0e69-4776-bea7-57ae8d297424'
 
 resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: 'id-avddeploy-api'
@@ -69,7 +70,7 @@ resource tableService 'Microsoft.Storage/storageAccounts/tableServices@2023-05-0
   name: 'default'
 }
 
-resource tables 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = [for table in ['organisations', 'memberroles', 'connectstates', 'tenantconnections', 'tenantowners']: {
+resource tables 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = [for table in ['organisations', 'memberroles', 'connectstates', 'tenantconnections', 'tenantowners', 'accountlinks']: {
   parent: tableService
   name: table
 }]
@@ -101,6 +102,42 @@ resource operatorBundleWrite 'Microsoft.Authorization/roleAssignments@2022-04-01
     principalId: operatorObjectId
     principalType: 'User'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobDataContributor)
+  }
+}
+
+// Operators' refresh tokens are sealed with this key (api/src/sealer.ts). The API can wrap and unwrap with it, nothing
+// else; the key never leaves Key Vault. Losing it only means operators link their accounts again.
+resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
+  name: 'kv-avdcp-${take(suffix, 12)}'
+  location: location
+  tags: tags
+  properties: {
+    tenantId: subscription().tenantId
+    sku: { family: 'A', name: 'standard' }
+    enableRbacAuthorization: true
+    enableSoftDelete: true
+    softDeleteRetentionInDays: 90
+    publicNetworkAccess: 'Enabled'
+  }
+}
+
+resource tokenWrapKey 'Microsoft.KeyVault/vaults/keys@2023-07-01' = {
+  parent: vault
+  name: 'refresh-token-wrap'
+  properties: {
+    kty: 'RSA'
+    keySize: 3072
+    keyOps: ['wrapKey', 'unwrapKey']
+  }
+}
+
+resource apiKeyUse 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(tokenWrapKey.id, identity.id, keyVaultCryptoUser)
+  scope: tokenWrapKey
+  properties: {
+    principalId: identity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultCryptoUser)
   }
 }
 
@@ -158,6 +195,7 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = if (deployApp) {
             { name: 'AKC_ADMIN_USER_IDS', value: join(akcAdminUserIds, ',') }
             { name: 'ENTRA_CLIENT_ID', value: entraClientId }
             { name: 'PORTAL_ORIGIN', value: portalOrigin }
+            { name: 'KEY_VAULT_KEY_ID', value: tokenWrapKey.properties.keyUri }
             { name: 'BUNDLE_URL', value: '${storage.properties.primaryEndpoints.blob}releases/${bundleName}' }
             { name: 'BUNDLE_SHA256', value: bundleSha256 }
           ]
@@ -171,7 +209,7 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = if (deployApp) {
       scale: { minReplicas: 0, maxReplicas: 2 }
     }
   }
-  dependsOn: [apiTables, apiBundleRead]
+  dependsOn: [apiTables, apiBundleRead, apiKeyUse]
 }
 
 resource staticWebApp 'Microsoft.Web/staticSites@2023-12-01' existing = {

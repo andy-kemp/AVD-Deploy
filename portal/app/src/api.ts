@@ -14,8 +14,28 @@ export interface AvdOrganisation {
   roles: string[];
   permissions: string[];
   tenant: TenantConnection | null;
+  /** The signed-in person's own Microsoft work account in that tenant. */
+  link: AccountLink | null;
   /** False until the AKC AVD Deploy Entra app is configured on the API. */
   connectAvailable: boolean;
+  linkAvailable: boolean;
+}
+
+export interface AccountLink {
+  username: string;
+  linkedAt: string;
+  mfa: boolean;
+}
+
+export interface Subscription {
+  id: string;
+  name: string;
+  state: string;
+}
+
+export interface Region {
+  name: string;
+  displayName: string;
 }
 
 export interface TenantConnection {
@@ -56,7 +76,7 @@ export class ApiError extends Error {
 export function useApi() {
   const { getToken } = useAuth();
   return useCallback(
-    async <T,>(method: 'GET' | 'POST', path: string, body?: unknown, options: { freshToken?: boolean } = {}): Promise<T> => {
+    async <T,>(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown, options: { freshToken?: boolean } = {}): Promise<T> => {
       // A fresh token after switching organisation, so the API sees the new active organisation.
       const token = await getToken(options.freshToken ? { skipCache: true } : undefined);
       if (!token) throw new ApiError(401, 'unauthenticated', 'Sign in first.');

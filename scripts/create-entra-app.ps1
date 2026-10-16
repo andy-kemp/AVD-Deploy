@@ -7,8 +7,8 @@ Creates or updates the multi-tenant "AKC AVD Deploy" app that customers approve 
 Run as someone who can manage app registrations in AKC's tenant (Application Administrator or higher), signed in with
 Connect-AzAccount to the subscription that holds the API. Safe to rerun.
 
-  - Multi-tenant web app with the Connect tenant redirect URIs (/connect/callback after admin consent, /connect/verify
-    after the proof sign-in).
+  - Multi-tenant web app with the redirect URIs for Connect tenant (/connect/callback after admin consent,
+    /connect/verify after the proof sign-in) and Link account (/link/callback).
   - Delegated permissions for connecting and discovery only: sign-in, User.Read, User.ReadBasic.All,
     GroupMember.Read.All, Application.Read.All and Azure Resource Manager user_impersonation. The post-deploy
     permissions (Conditional Access, app consent, RDP settings) get their own consent step later.
@@ -63,7 +63,7 @@ $registration = @{
     signInAudience         = 'AzureADMultipleOrgs'
     groupMembershipClaims  = 'DirectoryRole'
     web                    = @{
-        redirectUris          = @($origins | ForEach-Object { "$_/connect/callback"; "$_/connect/verify" })
+        redirectUris          = @($origins | ForEach-Object { "$_/connect/callback"; "$_/connect/verify"; "$_/link/callback" })
         implicitGrantSettings = @{ enableIdTokenIssuance = $false; enableAccessTokenIssuance = $false }
     }
     info                   = @{ marketingUrl = $PortalOrigin; supportUrl = 'https://www.andykemp.com/book-discovery-call/'; privacyStatementUrl = 'https://www.andykemp.com/privacy/' }

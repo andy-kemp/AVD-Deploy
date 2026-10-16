@@ -65,15 +65,15 @@ function SignedInApp() {
     content = <section className="card"><div className="note err">{error}</div><button className="btn btn-secondary" onClick={refresh}>Try again</button></section>;
   } else if (!me) {
     content = <p className="muted">Loading…</p>;
-  } else if (path === '/connect/callback' || path === '/connect/verify') {
-    content = <ConnectReturn step={path === '/connect/callback' ? 'consented' : 'verify'} onConnected={refresh} />;
+  } else if (path === '/connect/callback' || path === '/connect/verify' || path === '/link/callback') {
+    content = <ConnectReturn step={path === '/connect/callback' ? 'consented' : path === '/connect/verify' ? 'verify' : 'link'} onConnected={refresh} />;
   } else if (path === '/admin') {
     content = me.isAkcAdmin ? <AdminRequests /> : <section className="card"><p>This page is for AKC staff.</p></section>;
   } else {
     const avd = me.organisation?.avd;
     if (!avd) content = <GetStarted me={me} onRequested={refresh} />;
     else if (avd.status === 'pending') content = <Waiting organisation={avd} onCheck={refresh} />;
-    else if (avd.status === 'approved') content = <Welcome organisation={avd} />;
+    else if (avd.status === 'approved') content = <Welcome organisation={avd} onChanged={refresh} />;
     else content = <Declined organisation={avd} />;
   }
 

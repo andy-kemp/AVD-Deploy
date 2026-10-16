@@ -24,7 +24,32 @@ export interface VerifiedSignIn {
   tenantName: string;
 }
 
+export interface LinkedSignIn {
+  tenantId: string;
+  objectId: string;
+  username: string;
+  /** True when the sign-in used multi-factor authentication (amr contains mfa). */
+  mfa: boolean;
+  refreshToken: string;
+  accessToken: string;
+  expiresAt: number;
+}
+
+export interface ArmToken {
+  accessToken: string;
+  expiresAt: number;
+  /** Microsoft may rotate the refresh token; store it when present. */
+  refreshToken?: string;
+}
+
+/** Microsoft refused to refresh: expired, revoked, password changed, or Conditional Access needs a new sign-in. */
+export class RelinkNeededError extends Error {}
+
 export interface Entra {
+  /** Operator account link: a delegated sign-in for Azure Resource Manager with a refresh token. */
+  linkSignInUrl(tenantId: string, state: string, nonce: string, codeChallenge: string): string;
+  redeemLink(tenantId: string, code: string, codeVerifier: string, nonce: string): Promise<LinkedSignIn>;
+  armToken(tenantId: string, refreshToken: string): Promise<ArmToken>;
   adminConsentUrl(state: string): string;
   verifySignInUrl(tenantId: string, state: string, nonce: string, codeChallenge: string): string;
   /** Redeems the proof sign-in and returns its verified claims and the tenant's display name. */
@@ -41,7 +66,9 @@ export class EntraError extends Error {}
 export function createEntra(options: { clientId: string; portalOrigin: string; managedIdentityClientId?: string; getKey?: (tenantId: string) => JWTVerifyGetKey }): Entra {
   const consentRedirect = `${options.portalOrigin}/connect/callback`;
   const verifyRedirect = `${options.portalOrigin}/connect/verify`;
+  const linkRedirect = `${options.portalOrigin}/link/callback`;
   const signInScopes = 'openid profile https://graph.microsoft.com/User.Read';
+  const armScopes = 'openid profile offline_access https://management.azure.com/user_impersonation';
   const keys = new Map<string, JWTVerifyGetKey>();
   const getKey = options.getKey ?? ((tenantId: string) => {
     if (!keys.has(tenantId)) keys.set(tenantId, createRemoteJWKSet(new URL(`${login}/${tenantId}/discovery/v2.0/keys`)));
@@ -70,7 +97,66 @@ export function createEntra(options: { clientId: string; portalOrigin: string; m
     return { ok: response.ok, data };
   }
 
+  function authorizeUrl(tenantId: string, redirectUri: string, scope: string, state: string, nonce: string, challenge: string, prompt: string) {
+    const query = new URLSearchParams({
+      client_id: options.clientId,
+      response_type: 'code',
+      response_mode: 'query',
+      redirect_uri: redirectUri,
+      scope,
+      state,
+      nonce,
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+      prompt,
+    });
+    return `${login}/${tenantId}/oauth2/v2.0/authorize?${query}`;
+  }
+
+  async function verifyIdToken(tenantId: string, idToken: string, nonce: string) {
+    const { payload } = await jwtVerify(idToken, getKey(tenantId), {
+      issuer: `${login}/${tenantId}/v2.0`,
+      audience: options.clientId,
+      algorithms: ['RS256'],
+      clockTolerance: 60,
+    });
+    if (payload.nonce !== nonce) throw new EntraError('The sign-in response did not match this request.');
+    return payload;
+  }
+
+  const firstLine = (text: string | undefined, fallback: string) => text?.split(/\r?\n/)[0] ?? fallback;
+
   return {
+    linkSignInUrl(tenantId, state, nonce, challenge) {
+      return authorizeUrl(tenantId, linkRedirect, armScopes, state, nonce, challenge, 'select_account');
+    },
+
+    async redeemLink(tenantId, code, codeVerifier, nonce) {
+      const { ok, data } = await tokenRequest(tenantId, { grant_type: 'authorization_code', code, code_verifier: codeVerifier, redirect_uri: linkRedirect, scope: armScopes });
+      if (!ok || !data.id_token || !data.refresh_token || !data.access_token) throw new EntraError(firstLine(data.error_description, 'Microsoft did not complete the sign-in.'));
+      const payload = await verifyIdToken(tenantId, data.id_token, nonce);
+      // amr is in the access token, not the ID token; read it without re-verifying (Microsoft just issued it to us over TLS).
+      const accessClaims = JSON.parse(Buffer.from(data.access_token.split('.')[1] ?? '', 'base64url').toString('utf8') || '{}') as { amr?: string[] };
+      return {
+        tenantId: String(payload.tid ?? ''),
+        objectId: String(payload.oid ?? ''),
+        username: String(payload.preferred_username ?? payload.email ?? ''),
+        mfa: Array.isArray(accessClaims.amr) && accessClaims.amr.includes('mfa'),
+        refreshToken: data.refresh_token,
+        accessToken: data.access_token,
+        expiresAt: Date.now() + Number(data.expires_in ?? 3600) * 1000,
+      };
+    },
+
+    async armToken(tenantId, refreshToken) {
+      const { ok, data } = await tokenRequest(tenantId, { grant_type: 'refresh_token', refresh_token: refreshToken, scope: 'offline_access https://management.azure.com/user_impersonation' });
+      if (!ok || !data.access_token) {
+        if (['invalid_grant', 'interaction_required', 'consent_required'].includes(data.error)) throw new RelinkNeededError(firstLine(data.error_description, 'Sign in again.'));
+        throw new EntraError(firstLine(data.error_description, 'Microsoft did not issue an Azure token.'));
+      }
+      return { accessToken: data.access_token, expiresAt: Date.now() + Number(data.expires_in ?? 3600) * 1000, ...(data.refresh_token ? { refreshToken: data.refresh_token } : {}) };
+    },
+
     adminConsentUrl(state) {
       // /.default asks for every permission configured on the app registration.
       const query = new URLSearchParams({ client_id: options.clientId, scope: 'https://graph.microsoft.com/.default', redirect_uri: consentRedirect, state });
