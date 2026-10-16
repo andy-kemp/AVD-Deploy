@@ -12,14 +12,19 @@ Andy Kemp Consulting (AKC) hosts the portal. A customer signs up, connects their
 4. **Onboard a subscription** (someone with Owner on it, once per subscription). The portal shows exactly what it will do, then, as that person:
    - registers the resource providers AVD needs;
    - creates the workload resource group;
-   - grants the AKC app Contributor and a constrained RBAC Administrator role on that resource group only;
+   - grants the AKC app Contributor, Key Vault Secrets User and a constrained RBAC Administrator role on that resource group only;
    - assigns *Desktop Virtualization Power On Off Contributor* to the Azure Virtual Desktop service principal at subscription scope, if scaling will be used.
+
+   Each action shows its current state before anything changes, and the Owner applies them with one click. Requests stay under the 45-second linked-API limit: provider registration is started and then polled.
 5. **Design the desktop.** The existing wizard questions: shared or dedicated, persona, users, concurrency, hybrid or cloud-only identities, scaling, network, groups, names. Dropdowns are filled from the operator's own delegated discovery.
 6. **Preview.** A what-if runs as the operator and produces a plan with blockers, warnings, cost estimate and the post-deploy changes that will need confirmation.
 7. **Approve.** An approver (or the operator, if the organisation allows self-approval) approves the exact plan.
 8. **Deploy.** A queued job runs as the AKC app: foundation, platform, registration token, session hosts, token revocation, registration check, Kerberos restart, host assignment. The user can close the browser.
-9. **Finish setup.** The operator reviews and confirms the tenant-level changes (Entra RDP authentication, storage app consent, Conditional Access exclusion), which run as a short delegated job, followed by folder permissions and the device check.
-10. **Report.** Done items, remaining manual tasks and a "test sign-in" checklist. Later: **Add capacity**, **Add dedicated user**, **Repeat this deployment**.
+9. **Finish setup.** A customer administrator, present in the portal, consents to the separate **"AKC AVD Deploy – Tenant setup"** app ([ADR 0018](adr/0018-accounts-and-tenant-connection.md)) and reviews each tenant-level change before applying it: Entra RDP authentication (once per tenant), the storage account app's consent (through Microsoft's own consent page), its group-SID tag and private-link URIs, and the Conditional Access exclusion (the affected policies are listed first). These tokens are used immediately and never stored. FSLogix folder permissions run from the worker with the storage firewall opened only to the worker's fixed outbound IP. The customer can delete the Tenant setup app afterwards.
+10. **Who can use it.** Add users or groups to the AVD users group, still in the portal.
+11. **Ready.** Session host health, links to Windows App and the web client, and a "sign in and test" checklist. Later: **Add capacity**, **Add dedicated user**, **Repeat this deployment**.
+
+Cloud-only identities complete entirely in the portal. Hybrid identities also need on-premises Active Directory steps, which the portal checks and explains but can't perform.
 
 ## First run and invitations
 
@@ -108,7 +113,7 @@ What the CLI leaves as manual today, and what the hosted service does instead.
 | Desktop display name | Automatic, manual on failure | Automatic |
 | Kerberos restart of new hosts | Automatic | Automatic |
 | Entra RDP authentication (Windows Cloud Login) | PostDeploy, delegated | Finish setup, delegated, one click |
-| Storage app consent, tag, private-link URIs | PostDeploy, delegated | Finish setup, delegated |
+| Storage app consent, tag, private-link URIs | PostDeploy, delegated | Finish setup: consent through Microsoft's admin consent page for that app (no `DelegatedPermissionGrant.ReadWrite.All`); tag and URIs via the Tenant setup app |
 | Conditional Access exclusion | PostDeploy, typed `yes` | Finish setup: list shown, explicit confirmation in the UI |
 | FSLogix folder ACLs | PostDeploy, opens firewall to operator IP | Finish setup; firewall opened to the worker's static outbound IP only |
 | Host device check | PostDeploy | Automatic report |

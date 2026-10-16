@@ -16,7 +16,9 @@ Split the work by who runs it.
 | **Onboard subscription**: register providers, create the workload resource group, grant the AKC app its roles, assign the AVD power role at subscription scope | The operator, delegated, after explicit confirmation | Needs subscription Owner-level rights; these are never given to AKC |
 | Foundation (VNet, NAT, Key Vault, password) | AKC app, inside the onboarded resource group | Resource-group scoped; the subscription-scope parts already ran at onboarding |
 | Deploy: platform, token, session hosts, registration check, restart, host assignment | **AKC app service principal** in the customer tenant | Long-running; must not depend on a browser session |
-| Post-deploy Entra and storage steps (RDP Entra authentication, storage app consent and URIs, Conditional Access exclusion, folder ACLs, device check) | The operator, delegated, as its own job | Tenant-wide or security-control changes stay with an accountable person |
+| Finish setup: RDP Entra authentication, storage app tag and URIs, Conditional Access exclusion, group membership, device check | A customer administrator, delegated, through the separate **Tenant setup** app ([ADR 0018](0018-accounts-and-tenant-connection.md)); tokens used immediately, never stored | Tenant-wide or security-control changes stay with an accountable person who is present |
+| Storage app admin consent | The customer administrator, on Microsoft's own consent page | Needs no delegated grant permission |
+| FSLogix folder permissions | AKC app, from the worker's fixed outbound IP | Storage data-plane only, inside the onboarded resource group |
 | Dedicated user group membership | The operator, delegated | As ADR 0012 |
 
 ### AKC app credential: no secrets
@@ -28,6 +30,7 @@ The worker runs in Azure Container Apps Jobs with a user-assigned managed identi
 At the **workload resource group** only:
 
 - **Contributor**, for the AVD, compute, network, storage and Key Vault resources the Bicep creates.
+- **Key Vault Secrets User**, so the worker can read the session host admin password it passes to the session-host template. Granted here rather than by the foundation, so the app never assigns a role to itself.
 - **Role Based Access Control Administrator, with a condition** that allows assigning and removing only these roles, only to `Group` and `ServicePrincipal` principals:
   - Desktop Virtualization User (`1d18fff3-a72a-46b5-b4a9-0b38a3cd7e63`)
   - Virtual Machine User Login (`fb879df8-f326-4884-b1cf-06f3ad86be52`)
@@ -35,10 +38,10 @@ At the **workload resource group** only:
   - Desktop Virtualization Power On Contributor (`489581de-a3bd-480d-9518-53dea7416b33`)
   - Storage File Data SMB Share Contributor (`0c867c2a-1d8c-454a-a3db-ab2ea1bdc8bb`)
   - Storage File Data SMB Share Elevated Contributor (`a7264617-510b-434b-a828-9731dc254ea7`)
-  - Key Vault Secrets User (`4633458b-17de-408a-b874-0445c86b69e6`)
 
-  This is the set the current Bicep assigns. Any change to the Bicep's role assignments must update this list and the onboarding step together.
-In hosted mode the foundation stage grants Key Vault Secrets User on the new vault to the AKC app's service principal, instead of to the operator and a customer managed identity, so the worker can read the admin password it passes to the session-host template. The foundation's `deploymentIdentity` is not created in hosted mode.
+  This is the set the workload templates assign; Phase 1 tests check the list against the templates (the same list as the portal worker's, `$script:WorkerAssignableRoles`).
+
+The foundation's `deploymentIdentity` is not created in hosted mode.
 
 Nothing at subscription scope, and no Graph application permissions.
 
@@ -50,7 +53,7 @@ Nothing at subscription scope, and no Graph application permissions.
 
 ### Delegated jobs
 
-Delegated stages queued as jobs (post-deploy) use the operator's encrypted MSAL token cache. They run only within a short window after the operator triggers them (default 2 hours). If the token is expired or revoked, the stage stops with a "reconnect and retry" task.
+Delegated work that outlives a request (Preview, and Onboard subscription's provider registration) uses the operator's sealed refresh token for the main app, only for operations that person has just started. If the token is expired or revoked, the operator is asked to link again; it is never retried as the AKC app. Finish setup's powerful Tenant setup tokens are never stored or queued: the administrator is present for every change.
 
 ## Consequences
 
