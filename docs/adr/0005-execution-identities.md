@@ -1,6 +1,6 @@
 # ADR 0005: Delegated planning and scoped workload execution
 
-Status: Accepted. Date: 2026-10-11.
+Status: Accepted for self-hosted installs; superseded for the hosted service by [ADR 0019](0019-cross-tenant-execution.md) (proposed 2026-10-16). Date: 2026-10-11.
 
 ## Context
 

@@ -2,10 +2,13 @@
 
 Status: agreed design; Phase 1 CLI with Azure Preview/Deploy ready for a first sandbox run ([runbook](sandbox-test.md)). No portal is implemented. Updated: 2026-10-14.
 
+> **Direction change (proposed 2026-10-16):** the portal becomes a service hosted by Andy Kemp Consulting. Customers sign up (Clerk), connect their tenant through a multi-tenant Entra app and deploy into their own subscriptions. See [Hosted self-service design](hosted-service.md) and ADRs [0017](adr/0017-hosted-multi-tenant-service.md), [0018](adr/0018-accounts-and-tenant-connection.md) and [0019](adr/0019-cross-tenant-execution.md). Once accepted, these supersede ADRs 0001, 0002, 0003 and 0005 for the hosted service; the self-hosted text below remains the record for self-hosted installs and the CLI.
+
 Customers install this portal into **their own Azure subscription and Entra tenant**, from this repository using Bicep and one bootstrap script. The author's instance is simply the first installation. There is no central service, cross-tenant access or vendor standing access. Future SaaS must receive a separate design; MVP contracts only keep the target tenant explicit.
 
 ## Design documents
 
+- [Hosted self-service design](hosted-service.md) (proposed): AKC-hosted portal, Clerk accounts, tenant connection, cross-tenant execution, automation coverage, engine changes and phases H0-H5.
 - [Permission matrix](permission-matrix.md): executing identities, Azure scopes, verified Graph permissions and gaps.
 - [Threat model](threat-model.md): STRIDE threats, mitigations and test ideas.
 - [Customer bootstrap/uninstall](bootstrap.md): customer-admin actions, privilege hand-offs and ownership-aware cleanup.
@@ -158,6 +161,9 @@ Offline mocked tests cover ordering, failure handling and secret hygiene. The fi
 | Profiles | FSLogix on Azure Files for shared pools (hybrid GA, cloud-only preview); local profiles on dedicated hosts | [ADR 0011](adr/0011-user-profiles.md) |
 | Expansion | Expand V2 estates from the saved config; dedicated hosts for named users; group membership via operator's delegated rights only | [ADR 0012](adr/0012-expansion-and-dedicated-users.md) |
 | Foundation | `New` discovers subscription/region/network/groups; Deploy creates the resource group, VNet with NAT, Key Vault with generated password and managed identity | [ADR 0013](adr/0013-foundation-stage.md) |
+| Hosted service (proposed) | AKC hosts the control plane; workloads stay in customer subscriptions | [ADR 0017](adr/0017-hosted-multi-tenant-service.md) |
+| Hosted accounts (proposed) | Clerk organisations and roles for the portal; separate multi-tenant Entra app for tenant connection and per-operator account links | [ADR 0018](adr/0018-accounts-and-tenant-connection.md) |
+| Hosted execution (proposed) | Delegated discovery, preview, onboarding and post-deploy; deploy as the AKC app via managed-identity federated credential, scoped to the workload resource group | [ADR 0019](adr/0019-cross-tenant-execution.md) |
 
 ## Architecture
 
