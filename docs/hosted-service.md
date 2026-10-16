@@ -6,7 +6,7 @@ Andy Kemp Consulting (AKC) hosts the portal. A customer signs up, connects their
 
 ## Customer journey
 
-1. **Sign up** at `avd-deploy.andykemp.com`, or just sign in with an existing andykemp.com account (the same Clerk instance as AKC's other apps). Create or choose an organisation and request AVD for it. During the private beta AKC approves the organisation, and the requester becomes its first AVD Admin ([ADR 0018](adr/0018-accounts-and-tenant-connection.md)). They then invite colleagues as reader, operator, approver or admin.
+1. **Sign up** at `avd-deploy.andykemp.com`, or just sign in with an existing andykemp.com account (the same Clerk instance as AKC's other apps). The **Get started** screen (see [First run and invitations](#first-run-and-invitations)) creates or chooses an organisation and requests AVD for it. During the private beta AKC approves the organisation, and the requester becomes its first AVD Admin ([ADR 0018](adr/0018-accounts-and-tenant-connection.md)). They then invite colleagues as reader, operator, approver or admin.
 2. **Connect tenant** (organisation admin, once). A customer Global Administrator or Cloud Application Administrator approves the "AKC AVD Deploy" app on the admin consent page. The portal records the tenant against the organisation.
 3. **Link Microsoft account** (each operator, once). Sign in with your own work account in that tenant.
 4. **Onboard a subscription** (someone with Owner on it, once per subscription). The portal shows exactly what it will do, then, as that person:
@@ -20,6 +20,26 @@ Andy Kemp Consulting (AKC) hosts the portal. A customer signs up, connects their
 8. **Deploy.** A queued job runs as the AKC app: foundation, platform, registration token, session hosts, token revocation, registration check, Kerberos restart, host assignment. The user can close the browser.
 9. **Finish setup.** The operator reviews and confirms the tenant-level changes (Entra RDP authentication, storage app consent, Conditional Access exclusion), which run as a short delegated job, followed by folder permissions and the device check.
 10. **Report.** Done items, remaining manual tasks and a "test sign-in" checklist. Later: **Add capacity**, **Add dedicated user**, **Repeat this deployment**.
+
+## First run and invitations
+
+New and existing andykemp.com accounts take the same path; nothing is created for anyone until they use AVD Deploy.
+
+**Get started** (shown after sign-in when the person has no approved AVD organisation):
+
+1. **Choose an organisation.** Either **Create your organisation** (one click; name suggested from the email domain, so `jo@contoso.com` gets "Contoso"; Clerk makes the creator its admin), or pick an existing organisation in which they are Clerk admin, for example one made for another AKC tool. Organisations where they're only a member are listed as "ask your admin".
+2. **Request AVD.** Creates a *pending* AVD organisation record and alerts AKC. The screen shows "waiting for approval" until then.
+3. **AKC approves** (an AKC-only admin action). The requester becomes the first AVD Admin and lands on **Connect tenant**.
+
+**Invitations:**
+
+1. An AVD Admin invites by email and chooses AVD roles. The API creates a Clerk organisation invitation (Clerk sends the email) and stores a *pending role* for that email address and organisation.
+2. The person accepts, signing in or signing up in the same Clerk box.
+3. Clerk's `organizationMembership.created` webhook reaches the API, which applies the pending role to the new member. Pending roles expire with the invitation; a revoked invitation deletes its pending role.
+
+**Not automatic at sign-up.** Creating an organisation from Clerk's `user.created` event would fire for sign-ups to every andykemp.com app, because the instance is shared. Only AVD Deploy's own Get started screen creates or requests anything.
+
+**Later:** organisations could claim their email domain so colleagues are offered to join automatically (Clerk verified domains, possibly a paid feature); invitations cover this for now.
 
 ## Architecture
 
@@ -60,6 +80,7 @@ Cloudflare stays out of scope ([ADR 0007](adr/0007-no-cloudflare.md)).
 | --- | --- |
 | Organisation | Clerk org ID, status (pending, approved, suspended), approved by, approval policy (self-approval allowed or not), limits |
 | Member role | Clerk org ID, Clerk user ID, AVD roles (reader, operator, approver, admin), granted by, date; removed by the Clerk membership webhook |
+| Pending role | Clerk org ID, invited email, Clerk invitation ID, AVD roles, invited by, expiry; applied by the `organizationMembership.created` webhook, deleted when the invitation is revoked or expires |
 | Tenant connection | org ID, Entra tenant ID, consented scopes, consented by (oid), date, status |
 | Account link | Clerk user ID, tenant ID, Entra oid, UPN, encrypted token cache reference |
 | Subscription onboarding | tenant ID, subscription ID, workload resource group, role assignment IDs granted, onboarded by, date |
@@ -120,7 +141,7 @@ The engine runs unchanged in logic; these changes let it run headless in a worke
 | --- | --- | --- |
 | H0 Decide | Accept ADRs 0017-0019; two test tenants (AKC's and a "customer" tenant); register the multi-tenant app; start publisher verification | ADRs accepted, sandbox ready |
 | H1 Headless engine | Engine changes 1-7; CLI tests still pass; a local run using injected tokens deploys into the test customer tenant as the app | Existing tests pass; one headless deploy succeeds |
-| H2 Accounts and connect | Clerk organisations and roles; connect tenant and link account flows; read-only discovery in the UI | Negative tests: another organisation's tenant, mismatched `tid`, removed member, revoked consent all fail closed |
+| H2 Accounts and connect | Get started screen (create or choose organisation, request AVD, AKC approval, first AVD Admin); AVD roles and invitations with pending roles; Clerk membership webhooks; connect tenant and link account flows; read-only discovery in the UI | Negative tests: another organisation's tenant, mismatched `tid`, removed member, revoked consent, a token from another andykemp.com app, a pending (unapproved) organisation, and a non-admin requesting AVD all fail closed |
 | H3 Onboard and preview | Onboard subscription step; wizard; preview job; plan review and approval | Onboarding grants exactly the documented roles; approval binds to plan hash and expires |
 | H4 Deploy | `engine-app` and `engine-delegated` jobs; deploy, finish setup, report | Sandbox estate users can sign in; duplicate queue delivery does not duplicate resources; token always revoked |
 | H5 Grow | Add capacity, add dedicated user, repeat deployment; billing; Windows 365 later | Per feature |
