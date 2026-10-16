@@ -13,6 +13,16 @@ export interface AvdOrganisation {
   decidedAt: string | null;
   roles: string[];
   permissions: string[];
+  tenant: TenantConnection | null;
+  /** False until the AKC AVD Deploy Entra app is configured on the API. */
+  connectAvailable: boolean;
+}
+
+export interface TenantConnection {
+  tenantId: string;
+  name: string;
+  connectedAt: string;
+  consentedBy: string;
 }
 
 export interface Me {

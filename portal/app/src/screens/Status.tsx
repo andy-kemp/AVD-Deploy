@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { AvdOrganisation } from '../api';
+import { message, useApi, type AvdOrganisation } from '../api';
 import { Hero } from '../Chrome';
 
 const roleNames: Record<string, string> = { reader: 'Reader', operator: 'Operator', approver: 'Approver', admin: 'Admin' };
@@ -25,16 +25,53 @@ export function Waiting({ organisation, onCheck }: { organisation: AvdOrganisati
 }
 
 export function Welcome({ organisation }: { organisation: AvdOrganisation }) {
+  const api = useApi();
   const roles = organisation.roles.map((r) => roleNames[r] ?? r);
+  const isAdmin = organisation.permissions.includes('admin');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function connect() {
+    setBusy(true);
+    setError(null);
+    try {
+      // The API returns Microsoft's admin consent page for this attempt; Microsoft sends the browser back to /connect/callback.
+      window.location.assign((await api<{ url: string }>('POST', '/tenants/connect/start')).url);
+    } catch (e) {
+      setError(message(e));
+      setBusy(false);
+    }
+  }
+
+  const tenant = organisation.tenant;
   return (
     <>
       <Hero eyebrow="Welcome" title={`${organisation.name} is ready`}>
         {roles.length ? `Your AVD role: ${roles.join(', ')}.` : "You don't have an AVD role in this organisation yet. Ask its AVD Admin to give you one."}
       </Hero>
       <section className="card">
-        <h2><span className="step">1</span>Connect your Microsoft tenant</h2>
-        <p>A Global Administrator or Cloud Application Administrator in your tenant approves the AKC AVD Deploy app once. It can then only do what each person's own Azure and Entra roles allow.</p>
-        <div className="actions"><button className="btn btn-primary" disabled>Connect tenant</button><span className="muted">Coming next</span></div>
+        <h2><span className="step">1</span>{tenant ? 'Microsoft tenant connected' : 'Connect your Microsoft tenant'}</h2>
+        {tenant ? (
+          <>
+            <p><strong>{tenant.name || 'Your tenant'}</strong> <span className="pill ok">Connected</span></p>
+            <p className="muted">Tenant ID <span className="mono">{tenant.tenantId}</span>. Approved by {tenant.consentedBy} on {when(tenant.connectedAt)}.</p>
+          </>
+        ) : (
+          <>
+            <p>A Global Administrator or Cloud Application Administrator in your tenant approves the AKC AVD Deploy app once, then signs in once more so we can confirm the tenant is yours. The app can only ever do what each person's own Azure and Entra roles allow.</p>
+            {error && <div className="note err">{error}</div>}
+            <div className="actions">
+              {isAdmin && organisation.connectAvailable ? (
+                <button className="btn btn-primary" disabled={busy} onClick={connect}>{busy ? 'Opening Microsoft…' : 'Connect tenant'}</button>
+              ) : (
+                <>
+                  <button className="btn btn-primary" disabled>Connect tenant</button>
+                  <span className="muted">{!organisation.connectAvailable ? 'Coming soon' : 'Ask an AVD Admin in your organisation to connect the tenant.'}</span>
+                </>
+              )}
+            </div>
+          </>
+        )}
       </section>
       <section className="card">
         <h2><span className="step">2</span>Invite your team</h2>

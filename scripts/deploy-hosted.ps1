@@ -25,7 +25,10 @@ param(
     [string]$StaticWebAppLocation = 'westeurope',
     [string]$PortalOrigin = 'https://avd-deploy.andykemp.com',
     [string]$ClerkPublishableKey = 'pk_live_Y2xlcmsuYW5keWtlbXAuY29tJA',
-    [string[]]$AkcAdminUserIds = @('user_3C1cZGKKhAyL2R7CZTMais1rUVp')
+    [string[]]$AkcAdminUserIds = @('user_3C1cZGKKhAyL2R7CZTMais1rUVp'),
+    # Client ID printed by create-entra-app.ps1. Turns on Connect tenant.
+    [ValidatePattern('^$|^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')]
+    [string]$EntraClientId = ''
 )
 
 Set-StrictMode -Version Latest
@@ -83,6 +86,8 @@ $apiParameters = @{
     clerkPublishableKey = $ClerkPublishableKey
     authorizedParties   = @($PortalOrigin)
     akcAdminUserIds     = $AkcAdminUserIds
+    entraClientId       = $EntraClientId
+    portalOrigin        = $PortalOrigin
 }
 
 Write-Step 'Deploying API storage and identity'

@@ -16,6 +16,10 @@ param clerkPublishableKey string
 param authorizedParties array
 @description('Clerk user IDs that may approve organisations.')
 param akcAdminUserIds array
+@description('Client ID of the multi-tenant "AKC AVD Deploy" app (scripts/create-entra-app.ps1). Empty leaves Connect tenant off.')
+param entraClientId string = ''
+@description('Origin for Microsoft redirect URIs.')
+param portalOrigin string = authorizedParties[0]
 @description('Deploy the Container App and link it. False on the first pass, before the bundle has been uploaded.')
 param deployApp bool = true
 param bundleName string = ''
@@ -65,7 +69,7 @@ resource tableService 'Microsoft.Storage/storageAccounts/tableServices@2023-05-0
   name: 'default'
 }
 
-resource tables 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = [for table in ['organisations', 'memberroles']: {
+resource tables 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = [for table in ['organisations', 'memberroles', 'connectstates', 'tenantconnections', 'tenantowners']: {
   parent: tableService
   name: table
 }]
@@ -152,6 +156,8 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = if (deployApp) {
             { name: 'CLERK_PUBLISHABLE_KEY', value: clerkPublishableKey }
             { name: 'AUTHORIZED_PARTIES', value: join(authorizedParties, ',') }
             { name: 'AKC_ADMIN_USER_IDS', value: join(akcAdminUserIds, ',') }
+            { name: 'ENTRA_CLIENT_ID', value: entraClientId }
+            { name: 'PORTAL_ORIGIN', value: portalOrigin }
             { name: 'BUNDLE_URL', value: '${storage.properties.primaryEndpoints.blob}releases/${bundleName}' }
             { name: 'BUNDLE_SHA256', value: bundleSha256 }
           ]

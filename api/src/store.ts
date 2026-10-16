@@ -29,6 +29,28 @@ export interface MemberRoleRecord {
   grantedAt: string;
 }
 
+/** One Connect tenant attempt, bound to the Clerk user and organisation that started it. Short-lived and single-use. */
+export interface ConnectState {
+  state: string;
+  orgId: string;
+  userId: string;
+  stage: 'consent' | 'verify';
+  tenantId?: string;
+  codeVerifier?: string;
+  nonce?: string;
+  expiresAt: string;
+}
+
+export interface TenantConnection {
+  orgId: string;
+  tenantId: string;
+  tenantName: string;
+  connectedBy: string;
+  consentedByObjectId: string;
+  consentedByUsername: string;
+  connectedAt: string;
+}
+
 export interface Store {
   getOrganisation(orgId: string): Promise<OrganisationRecord | null>;
   /** Fails with 409 if a record already exists. */
@@ -38,7 +60,15 @@ export interface Store {
   decideOrganisation(orgId: string, status: 'approved' | 'declined', by: string, at: string): Promise<OrganisationRecord>;
   getMemberRoles(orgId: string, userId: string): Promise<MemberRoleRecord | null>;
   putMemberRoles(record: MemberRoleRecord): Promise<void>;
+  putConnectState(record: ConnectState): Promise<void>;
+  /** Returns and deletes the state, so each one is used once. */
+  takeConnectState(state: string): Promise<ConnectState | null>;
+  getTenantConnection(orgId: string): Promise<TenantConnection | null>;
+  /** Records the connection; fails with 409 if another organisation already owns the tenant. */
+  connectTenant(record: TenantConnection): Promise<void>;
 }
+
+const tenantTaken = () => new HttpError(409, 'tenant-taken', 'This Microsoft tenant is already connected to another organisation. Contact hello@andykemp.com.');
 
 const conflict = (message: string) => new HttpError(409, 'conflict', message);
 
@@ -76,16 +106,50 @@ export class MemoryStore implements Store {
   async putMemberRoles(record: MemberRoleRecord) {
     this.roles.set(`${record.orgId}/${record.userId}`, { ...record, roles: [...record.roles] });
   }
+
+  private states = new Map<string, ConnectState>();
+  private connections = new Map<string, TenantConnection>();
+  private tenantOwners = new Map<string, string>();
+
+  async putConnectState(record: ConnectState) {
+    this.states.set(record.state, { ...record });
+  }
+
+  async takeConnectState(state: string) {
+    const record = this.states.get(state);
+    this.states.delete(state);
+    return record ? { ...record } : null;
+  }
+
+  async getTenantConnection(orgId: string) {
+    const record = this.connections.get(orgId);
+    return record ? { ...record } : null;
+  }
+
+  async connectTenant(record: TenantConnection) {
+    const owner = this.tenantOwners.get(record.tenantId);
+    if (owner && owner !== record.orgId) throw tenantTaken();
+    this.tenantOwners.set(record.tenantId, record.orgId);
+    this.connections.set(record.orgId, { ...record });
+  }
 }
 
 // Organisations: PartitionKey = Clerk org ID, RowKey = 'organisation'. Member roles: PartitionKey = org ID, RowKey = user ID.
+// Connect states: PartitionKey = state, RowKey = 'state'. Tenant connections: PartitionKey = org ID, RowKey = 'tenant'.
+// Tenant owners: PartitionKey = Entra tenant ID, RowKey = 'owner' (one organisation per tenant).
 export class TableStore implements Store {
   private organisations: TableClient;
   private memberRoles: TableClient;
+  private connectStates: TableClient;
+  private tenantConnections: TableClient;
+  private tenantOwners: TableClient;
 
-  private constructor(organisations: TableClient, memberRoles: TableClient) {
-    this.organisations = organisations;
-    this.memberRoles = memberRoles;
+  private constructor(client: (table: string) => TableClient) {
+    this.organisations = client('organisations');
+    this.memberRoles = client('memberroles');
+    this.connectStates = client('connectstates');
+    this.tenantConnections = client('tenantconnections');
+    this.tenantOwners = client('tenantowners');
   }
 
   static async create(storage: Exclude<Config['storage'], { kind: 'memory' }>): Promise<TableStore> {
@@ -93,8 +157,8 @@ export class TableStore implements Store {
       storage.kind === 'connection-string'
         ? TableClient.fromConnectionString(storage.connectionString, table, { allowInsecureConnection: storage.connectionString.includes('127.0.0.1') })
         : new TableClient(`https://${storage.accountName}.table.core.windows.net`, table, new DefaultAzureCredential());
-    const store = new TableStore(client('organisations'), client('memberroles'));
-    for (const table of [store.organisations, store.memberRoles]) {
+    const store = new TableStore(client);
+    for (const table of [store.organisations, store.memberRoles, store.connectStates, store.tenantConnections, store.tenantOwners]) {
       try {
         await table.createTable();
       } catch (e) {
@@ -178,5 +242,67 @@ export class TableStore implements Store {
       { partitionKey: record.orgId, rowKey: record.userId, roles: JSON.stringify(record.roles), grantedBy: record.grantedBy, grantedAt: record.grantedAt },
       'Replace',
     );
+  }
+
+  async putConnectState(record: ConnectState) {
+    const { state, ...rest } = record;
+    await this.connectStates.upsertEntity({ partitionKey: state, rowKey: 'state', ...rest }, 'Replace');
+  }
+
+  async takeConnectState(state: string) {
+    let entity;
+    try {
+      entity = await this.connectStates.getEntity<Omit<ConnectState, 'state'>>(state, 'state');
+    } catch (e) {
+      if (e instanceof RestError && e.statusCode === 404) return null;
+      throw e;
+    }
+    try {
+      // Deleting with the ETag means only one caller can use the state.
+      await this.connectStates.deleteEntity(state, 'state', { etag: entity.etag });
+    } catch (e) {
+      if (e instanceof RestError && (e.statusCode === 404 || e.statusCode === 412)) return null;
+      throw e;
+    }
+    return {
+      state,
+      orgId: entity.orgId,
+      userId: entity.userId,
+      stage: entity.stage,
+      expiresAt: entity.expiresAt,
+      ...(entity.tenantId ? { tenantId: entity.tenantId } : {}),
+      ...(entity.codeVerifier ? { codeVerifier: entity.codeVerifier } : {}),
+      ...(entity.nonce ? { nonce: entity.nonce } : {}),
+    };
+  }
+
+  async getTenantConnection(orgId: string) {
+    try {
+      const entity = await this.tenantConnections.getEntity<Omit<TenantConnection, 'orgId'>>(orgId, 'tenant');
+      return {
+        orgId,
+        tenantId: entity.tenantId,
+        tenantName: entity.tenantName,
+        connectedBy: entity.connectedBy,
+        consentedByObjectId: entity.consentedByObjectId,
+        consentedByUsername: entity.consentedByUsername,
+        connectedAt: entity.connectedAt,
+      };
+    } catch (e) {
+      if (e instanceof RestError && e.statusCode === 404) return null;
+      throw e;
+    }
+  }
+
+  async connectTenant(record: TenantConnection) {
+    try {
+      await this.tenantOwners.createEntity({ partitionKey: record.tenantId, rowKey: 'owner', orgId: record.orgId, claimedAt: record.connectedAt });
+    } catch (e) {
+      if (!(e instanceof RestError && e.statusCode === 409)) throw e;
+      const owner = await this.tenantOwners.getEntity<{ orgId: string }>(record.tenantId, 'owner');
+      if (owner.orgId !== record.orgId) throw tenantTaken();
+    }
+    const { orgId, ...rest } = record;
+    await this.tenantConnections.upsertEntity({ partitionKey: orgId, rowKey: 'tenant', ...rest }, 'Replace');
   }
 }

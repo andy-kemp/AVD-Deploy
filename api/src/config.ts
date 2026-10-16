@@ -10,6 +10,12 @@ export interface Config {
   authorizedParties: string[];
   /** Clerk user IDs that may approve or decline organisations (AKC staff). */
   akcAdminUserIds: Set<string>;
+  /** Multi-tenant "AKC AVD Deploy" app (Connect tenant). Empty until the app is created. */
+  entraClientId: string;
+  /** Origin for Microsoft redirect URIs (/connect/callback and /connect/verify). */
+  portalOrigin: string;
+  /** Client ID of the API's user-assigned managed identity, its credential for the Entra app. */
+  managedIdentityClientId: string;
   storage: { kind: 'memory' } | { kind: 'table'; accountName: string } | { kind: 'connection-string'; connectionString: string };
 }
 
@@ -44,6 +50,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     jwksUrl: `${issuer}/.well-known/jwks.json`,
     authorizedParties,
     akcAdminUserIds: new Set(list(env.AKC_ADMIN_USER_IDS)),
+    entraClientId: (env.ENTRA_CLIENT_ID ?? '').trim(),
+    portalOrigin: (env.PORTAL_ORIGIN ?? authorizedParties[0]).replace(/\/+$/, ''),
+    managedIdentityClientId: (env.AZURE_CLIENT_ID ?? '').trim(),
     storage,
   };
 }

@@ -3,6 +3,7 @@ import { OrganizationSwitcher, SignIn, UserButton, useAuth } from '@clerk/react'
 import { message, useApi, type Me } from './api';
 import { SiteFooter, SiteHeader } from './Chrome';
 import { AdminRequests } from './screens/AdminRequests';
+import { ConnectReturn } from './screens/ConnectReturn';
 import { GetStarted } from './screens/GetStarted';
 import { Declined, Waiting, Welcome } from './screens/Status';
 
@@ -64,6 +65,8 @@ function SignedInApp() {
     content = <section className="card"><div className="note err">{error}</div><button className="btn btn-secondary" onClick={refresh}>Try again</button></section>;
   } else if (!me) {
     content = <p className="muted">Loading…</p>;
+  } else if (path === '/connect/callback' || path === '/connect/verify') {
+    content = <ConnectReturn step={path === '/connect/callback' ? 'consented' : 'verify'} onConnected={refresh} />;
   } else if (path === '/admin') {
     content = me.isAkcAdmin ? <AdminRequests /> : <section className="card"><p>This page is for AKC staff.</p></section>;
   } else {
