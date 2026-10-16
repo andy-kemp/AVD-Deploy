@@ -1,0 +1,103 @@
+/* Light theme of www.andykemp.com (coppersite src/styles/global.css), with the page chrome of AKC Tenant Audit. */
+:root {
+  --colour-bg: #ffffff; --colour-bg-soft: #f7f3ef; --colour-panel: #ffffff; --colour-panel-raised: #f4ede6;
+  --colour-copper: #8a4e2e; --colour-copper-light: #75401f; --colour-copper-dark: #60351f; --colour-copper-strong: #8a4e2e;
+  --colour-heading: #201a16; --colour-text: #302923; --colour-muted: #625850;
+  --colour-border: rgba(117, 64, 31, 0.22); --colour-border-strong: rgba(117, 64, 31, 0.42); --colour-focus: #75401f;
+  --colour-success: #42683a; --colour-success-bg: #eef4ec; --colour-danger: #b42318; --colour-danger-bg: #fdecea;
+  --font-sans: Inter, Aptos, "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, "Courier New", monospace;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { font-size: 16px; -webkit-font-smoothing: antialiased; }
+body { margin: 0; font-family: var(--font-sans); line-height: 1.6; background: var(--colour-bg); color: var(--colour-text); }
+#root { min-height: 100vh; display: flex; flex-direction: column; }
+::selection { background: var(--colour-copper); color: #fff; }
+a { color: var(--colour-copper-light); text-decoration: none; }
+a:hover { color: var(--colour-copper); }
+:focus-visible { outline: 2px solid var(--colour-focus); outline-offset: 2px; }
+.wrap { max-width: 1280px; margin: 0 auto; padding: 0 16px; }
+.wrap.narrow { max-width: 880px; }
+@media (min-width: 640px) { .wrap { padding: 0 24px; } }
+.muted { color: var(--colour-muted); }
+.mono { font-family: var(--font-mono); font-size: 0.75rem; }
+
+/* Header */
+.site-header { position: sticky; top: 0; z-index: 50; background: rgba(255, 255, 255, 0.96); backdrop-filter: blur(10px); border-bottom: 1px solid var(--colour-border); }
+.site-header .wrap { padding-top: 12px; padding-bottom: 12px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.logo { height: 44px; width: auto; display: block; }
+.subtitle { display: none; border-left: 1px solid var(--colour-border); padding-left: 12px; font-size: 0.875rem; font-weight: 600; white-space: nowrap; color: var(--colour-muted); }
+.subtitle:hover { color: var(--colour-copper); }
+@media (min-width: 640px) { .logo { height: 56px; } .subtitle { display: inline; } }
+.header-nav { display: flex; align-items: center; gap: 16px; font-size: 0.875rem; font-weight: 500; }
+.header-nav > a { color: var(--colour-text); }
+.header-nav > a:hover { color: var(--colour-copper); }
+
+/* Pages */
+main { flex: 1; display: flex; flex-direction: column; }
+.sign-in-page, .centre-page { flex: 1; min-height: calc(100vh - 81px); display: flex; align-items: center; justify-content: center; background: var(--colour-panel-raised); padding: 2rem 16px; }
+.content-page { flex: 1; background: var(--colour-bg-soft); padding: 2.5rem 0 4rem; }
+.eyebrow { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--colour-copper); margin: 0 0 0.5rem; }
+h1 { color: var(--colour-heading); font-size: clamp(1.75rem, 3.5vw, 2.5rem); line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 0.75rem; }
+h2 { color: var(--colour-heading); font-size: 1.125rem; line-height: 1.3; margin: 0 0 1rem; display: flex; align-items: center; gap: 0.6rem; }
+.lead { color: var(--colour-muted); font-size: 1.0625rem; margin: 0 0 2rem; max-width: 46rem; }
+.card { background: var(--colour-panel); border: 1px solid var(--colour-border); border-radius: 12px; padding: 1.5rem 2rem; margin-bottom: 1.5rem; }
+.card p { margin: 0 0 1rem; }
+.card p:last-child { margin-bottom: 0; }
+@media (max-width: 640px) { .card { padding: 1.25rem; } }
+.step { display: inline-flex; align-items: center; justify-content: center; width: 1.6rem; height: 1.6rem; border-radius: 999px; background: var(--colour-copper); color: #fff; font-size: 0.8125rem; font-weight: 700; flex: none; }
+.next-steps { margin: 0 0 1.25rem; padding-left: 1.25rem; display: grid; gap: 0.4rem; }
+.hint { font-size: 0.875rem; color: var(--colour-muted); margin: 0.5rem 0 0; }
+
+/* Forms */
+label { font-weight: 600; font-size: 0.9375rem; color: var(--colour-heading); }
+input[type='text'], select { display: block; width: 100%; margin-top: 0.4rem; padding: 0.75rem 1rem; font: inherit; color: var(--colour-text); background: var(--colour-panel); border: 1px solid var(--colour-border); border-radius: 8px; transition: border-color 150ms ease, box-shadow 150ms ease; }
+input[type='text']:focus, select:focus { outline: none; border-color: var(--colour-copper); box-shadow: 0 0 0 3px rgba(138, 78, 46, 0.12); }
+.choices { display: grid; gap: 0.75rem; }
+.choice { display: flex; gap: 0.75rem; align-items: flex-start; padding: 1rem 1.25rem; border: 1px solid var(--colour-border); border-radius: 8px; cursor: pointer; transition: border-color 150ms ease, background 150ms ease; }
+.choice:hover { border-color: var(--colour-border-strong); }
+.choice.selected { border-color: var(--colour-copper); background: var(--colour-bg-soft); }
+.choice input { margin-top: 0.3rem; accent-color: var(--colour-copper); }
+.choice small { display: block; font-weight: 400; color: var(--colour-muted); font-size: 0.875rem; margin-top: 0.15rem; }
+.choice-detail { padding: 0 0.25rem 0.5rem 2.6rem; }
+.toolbar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
+.toolbar select { width: auto; margin-top: 0; padding: 0.4rem 0.75rem; }
+
+/* Buttons (coppersite .btn) */
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem 1rem; margin-top: 1.25rem; }
+.btn { display: inline-flex; align-items: center; justify-content: center; padding: 0.75rem 1.5rem; font: inherit; font-weight: 600; border-radius: 8px; cursor: pointer; transition: all 250ms ease; border: 2px solid transparent; }
+.btn-small { padding: 0.35rem 0.85rem; font-size: 0.875rem; }
+.btn-primary { background: linear-gradient(135deg, var(--colour-copper-strong) 0%, var(--colour-copper-dark) 100%); color: #fff; box-shadow: 0 4px 12px rgba(138, 78, 46, 0.25); }
+.btn-primary:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(138, 78, 46, 0.35); }
+.btn-secondary { background: transparent; color: var(--colour-heading); border-color: var(--colour-border-strong); }
+.btn-secondary:hover:not(:disabled) { background: var(--colour-panel-raised); border-color: var(--colour-copper); color: var(--colour-copper-light); }
+.btn:disabled { opacity: 0.55; cursor: default; box-shadow: none; }
+
+/* Notes, pills, tables */
+.note { font-size: 0.9375rem; padding: 0.75rem 1rem; border-radius: 8px; margin-top: 1rem; background: var(--colour-panel-raised); }
+.note.err { background: var(--colour-danger-bg); color: var(--colour-danger); }
+.pill { display: inline-block; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; padding: 0.15rem 0.6rem; border-radius: 999px; border: 1px solid var(--colour-border-strong); color: var(--colour-copper); }
+.pill.ok { color: var(--colour-success); border-color: var(--colour-success); background: var(--colour-success-bg); }
+.pill.bad { color: var(--colour-danger); border-color: var(--colour-danger); }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.9375rem; }
+th { text-align: left; font-size: 0.8125rem; color: var(--colour-muted); font-weight: 600; padding: 0.5rem 0.5rem; }
+td { padding: 0.75rem 0.5rem; border-top: 1px solid var(--colour-border); vertical-align: top; }
+.row-actions { white-space: nowrap; display: flex; gap: 0.5rem; }
+
+/* Footer (AKC Tenant Audit site-chrome) */
+.site-footer { border-top: 1px solid var(--colour-border); background: var(--colour-bg-soft); color: var(--colour-muted); font-size: 0.875rem; }
+.footer-grid { padding-top: 40px; padding-bottom: 40px; display: grid; gap: 32px; }
+@media (min-width: 640px) { .footer-grid { grid-template-columns: 2fr 1fr 1fr; } }
+.footer-grid h2 { font-size: 0.875rem; font-weight: 700; margin: 0 0 12px; color: var(--colour-heading); }
+.footer-grid ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.footer-grid a { color: inherit; }
+.footer-grid a:hover { color: var(--colour-copper); }
+.footer-grid p { margin: 12px 0 0; line-height: 1.6; max-width: 24rem; }
+.footer-note { font-size: 0.75rem; }
+.footer-logo { height: 40px; width: auto; display: block; }
+.footer-legal { border-top: 1px solid var(--colour-border); }
+.footer-legal .wrap { padding-top: 16px; padding-bottom: 16px; font-size: 0.75rem; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; }
+.footer-legal p { margin: 0; }

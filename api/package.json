@@ -1,0 +1,23 @@
+{
+  "name": "avd-deploy-api",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "AVD Deploy hosted API (ADR 0017-0019). Runs on Node 24 with built-in TypeScript type stripping; no build step.",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node src/server.ts",
+    "dev": "node --watch --env-file-if-exists=.env.local src/server.ts",
+    "check": "tsc --noEmit",
+    "test": "node --test test/**/*.test.ts"
+  },
+  "dependencies": {
+    "@azure/data-tables": "13.3.2",
+    "@azure/identity": "4.13.3",
+    "jose": "6.2.12"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "typescript": "7.0.2"
+  }
+}
