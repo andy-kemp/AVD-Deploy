@@ -14,29 +14,33 @@ Use two layers.
 
 ### 1. Portal accounts: Clerk
 
-- Clerk handles sign-up, sign-in, MFA and sessions. "Sign in with Microsoft" is allowed as a Clerk login method, but it only proves who the person is.
-- A **Clerk organisation** is a customer. Organisation roles replace the `Portal.*` app roles of ADR 0003:
+- Clerk handles sign-up, sign-in, sessions, organisations, invitations and membership. "Sign in with Microsoft" or Google is allowed as a Clerk login method, but it only proves who the person is.
+- A **Clerk organisation** is a customer. **AVD roles are stored in the AVD control plane**, keyed by Clerk organisation ID and user ID, not as Clerk roles. They replace the `Portal.*` app roles of ADR 0003:
 
-  | AVD role | Clerk permissions | Can |
+  | AVD role | Permissions | Can |
   | --- | --- | --- |
-  | Reader | `org:avd:read` | View estates, plans and job history |
-  | Operator | `org:avd:read`, `org:avd:operate` | Run discovery, create configurations and previews, submit plans |
-  | Approver | `org:avd:read`, `org:avd:approve` | Approve plans (not their own, where the organisation requires independent approval) |
-  | Admin | all four, including `org:avd:admin` | Enable AVD for the organisation, connect or disconnect tenants, manage approval policy |
+  | Reader | `read` | View estates, plans and job history |
+  | Operator | `read`, `operate` | Run discovery, create configurations and previews, submit plans |
+  | Approver | `read`, `approve` | Approve plans (not their own, where the organisation requires independent approval) |
+  | Admin | all four, including `admin` | Connect or disconnect tenants, manage AVD roles and approval policy |
 
-- The API verifies the Clerk session token (signature, issuer, expiry, organisation and role) on every request. Clerk roles grant portal actions only; they never grant Azure or Graph rights.
+  A member can hold several AVD roles, alongside whatever Clerk role they have for other apps.
+- The API verifies the Clerk session token (signature, issuer, expiry, `azp`, active organisation) on every request, then reads the caller's AVD roles for that organisation from the control plane. AVD roles grant portal actions only; they never grant Azure or Graph rights.
+- **Why not Clerk custom roles:** they need a paid add-on in production, a Clerk member has exactly one role per organisation (so an organisation's admin for another app couldn't also be an AVD Approver), and roles are instance-wide, so AVD roles would appear in the other apps.
 
 ### Reusing the existing andykemp.com Clerk instance
 
 AKC already runs other apps on andykemp.com with one Clerk production instance. The AVD portal joins that instance rather than creating a new one, so people already signed in to another andykemp.com app are signed in here too. Because the instance is shared:
 
 - **Pin the token to this app.** The API passes `authorizedParties: ['https://avd-deploy.andykemp.com']` to Clerk's `verifyToken` (it checks the token's `azp`). A session token minted for another andykemp.com app is rejected by the AVD API.
-- **Use AVD-specific permissions, not shared role names.** Organisation roles and permissions are instance-wide, so a generic `org:admin` from another app must not mean anything here. Define custom permissions `org:avd:read`, `org:avd:operate`, `org:avd:approve` and `org:avd:admin`, attach them to roles, and have the API check permissions only. The role table above describes which permissions each AVD role carries.
+- **Clerk roles mean nothing here, except once.** A Clerk organisation role such as `org:admin` may have been given for another app, so it grants no AVD permission. The only exception is the first AVD Admin, below.
+- **Organisations are optional on the instance** ("Membership optional"), so users of the other apps are never forced into one. The AVD API refuses AVD actions without an active organisation.
+- **Removing a member removes their AVD roles.** A Clerk webhook (`organizationMembership.deleted`, `organization.deleted`) deletes the matching AVD roles and account links, and every request also checks that the token's active organisation is the one the role belongs to.
 - **Opt in per organisation.** A Clerk organisation created for another app is not an AVD customer until an organisation admin enables AVD (an AVD organisation record in the control-plane store). Membership alone grants nothing.
 - **Private beta gate.** Anyone can sign in, but enabling AVD creates a *pending* organisation record that AKC must approve before the organisation can connect a tenant. The gate stays until publisher verification, terms of service, a data processing agreement and pricing are in place; removing it later is a setting, not a redesign.
-- **The first AVD Admin.** Role defaults are instance-wide, so AVD can't make "AVD Admin" the default for new organisations without affecting the other apps. Instead, **Enable AVD** is the only action that accepts Clerk's built-in organisation admin (`org:sys_memberships:manage`). When AKC approves the organisation, the API assigns that person the AVD Admin role through Clerk's backend API and records who approved it. After that, only `org:avd:*` permissions count, and AVD Admins manage the other AVD roles.
+- **The first AVD Admin.** **Enable AVD** is the only action that accepts Clerk's built-in organisation admin role (`rol: admin` in the session token; Clerk leaves system permissions out of tokens). When AKC approves the organisation, the API records that person as its first AVD Admin, and who approved it. After that, only AVD roles count, and AVD Admins manage the others.
 - **Keep AVD data out of Clerk metadata.** Tenant IDs, connections and token references live only in the AVD control-plane store, never in Clerk user or organisation metadata that other apps on the instance can read.
-- **Shared sign-in policy.** MFA, social connections and session lifetime are instance settings shared with the other apps. Require MFA for any member holding `org:avd:approve` or `org:avd:admin`; if the instance can't enforce that per permission, re-check a recent second factor (Clerk step-up/reverification) before approval and tenant connection.
+- **MFA comes from the customer's Microsoft sign-in.** Social connections and session lifetime are instance settings shared with the other apps. Clerk MFA needs a paid plan in production, and Clerk can't see the MFA a person did at Microsoft or Google (its `fva` claim only records Clerk's own factors). Instead, approving a plan, connecting or disconnecting a tenant, and changing AVD roles require a fresh sign-in (at most 10 minutes old) to the operator's **linked work account**, whose Entra token must show MFA (`amr` contains `mfa`). That also applies the customer's own Conditional Access. A recent Clerk second factor (`fva[1]` of 10 minutes or less) is accepted instead, if AKC ever turns Clerk MFA on.
 
 ### 2. Tenant connection: AKC's multi-tenant Entra app
 

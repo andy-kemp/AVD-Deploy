@@ -42,7 +42,7 @@ flowchart LR
 | --- | --- | --- |
 | Front end | Azure Static Web Apps (`swa-avddeploy-portal`, currently Free; move to **Standard** for the linked API) | Static TypeScript/React build with Clerk's front-end SDK. Follows the www.andykemp.com look and feel: coppersite's design tokens (`src/styles/global.css`), light by default with the same `akc-theme` dark toggle, AKC logo header, and a Clerk `appearance` built from those tokens so sign-in and the user menu match. [portal/web/index.html](../portal/web/index.html) is the reference. |
 | API | TypeScript (Node) on Azure Container Apps, linked to the Static Web App as its backend so `/api` is same-origin | Standard plan required for linking. The API validates the Clerk bearer token itself; it never trusts Static Web Apps identity headers. Linked APIs have a 45-second request limit, so anything longer becomes a job. Clerk and MSAL Node SDKs are first-class. |
-| Accounts | The existing andykemp.com Clerk production instance, with organisations and AVD-specific permissions (`org:avd:*`) | Tokens verified with `authorizedParties` pinned to the AVD origin. [ADR 0018](adr/0018-accounts-and-tenant-connection.md) |
+| Accounts | The existing andykemp.com Clerk production instance for sign-in and organisations (membership optional); AVD roles stored in the control plane | Tokens verified with `authorizedParties` pinned to the AVD origin. Sensitive actions need a fresh MFA sign-in to the linked work account. No paid Clerk features. [ADR 0018](adr/0018-accounts-and-tenant-connection.md) |
 | Domain | `avd-deploy.andykemp.com` on the Static Web App custom domain with its free managed certificate | DNS: one `CNAME` to the Static Web App's `*.azurestaticapps.net` address, DNS-only in Cloudflare. If the zone has a CAA record, allow `digicert.com`. The API's Container Apps address is not published as a custom domain. |
 | Tenant connection | Multi-tenant Entra app in AKC's tenant, confidential client, publisher-verified | Admin consent once per tenant; per-operator account link |
 | Jobs | Azure Storage Queue + Container Apps Jobs (event-driven) | Kept from [ADR 0004](adr/0004-hosting-and-workers.md). Two fixed job definitions: `engine-app` (runs as the AKC app) and `engine-delegated` (runs with the operator's token). No per-job image or command overrides. |
@@ -58,7 +58,8 @@ Cloudflare stays out of scope ([ADR 0007](adr/0007-no-cloudflare.md)).
 
 | Entity | Key fields |
 | --- | --- |
-| Organisation | Clerk org ID, approval policy (self-approval allowed or not), limits |
+| Organisation | Clerk org ID, status (pending, approved, suspended), approved by, approval policy (self-approval allowed or not), limits |
+| Member role | Clerk org ID, Clerk user ID, AVD roles (reader, operator, approver, admin), granted by, date; removed by the Clerk membership webhook |
 | Tenant connection | org ID, Entra tenant ID, consented scopes, consented by (oid), date, status |
 | Account link | Clerk user ID, tenant ID, Entra oid, UPN, encrypted token cache reference |
 | Subscription onboarding | tenant ID, subscription ID, workload resource group, role assignment IDs granted, onboarded by, date |

@@ -200,19 +200,19 @@
     addRow('Issuer (iss)', claims.iss || '(missing)', claims.iss === `https://${EXPECTED_ISSUER_HOST}`);
     addRow('Authorised party (azp)', claims.azp || '(missing)', claims.azp === location.origin);
     addRow('This page origin', location.origin);
-    // fva = [minutes since first factor, minutes since second factor]; -1 means no second factor this session.
+    // fva = [minutes since first factor, minutes since second factor]; -1 means no Clerk second factor (ADR 0018:
+    // AVD checks MFA on the linked work account instead, so this is information only).
     const secondFactor = Array.isArray(claims.fva) ? claims.fva[1] : undefined;
-    addRow('Second factor (MFA)', secondFactor === undefined ? '(not in token)' : secondFactor < 0 ? 'Not used this session: needed for Approver and Admin' : `Used ${secondFactor} minute(s) ago`, secondFactor !== undefined && secondFactor >= 0);
+    addRow('Clerk second factor', secondFactor === undefined || secondFactor < 0 ? 'Not used. AVD checks MFA on your linked Microsoft work account for approvals.' : `Used ${secondFactor} minute(s) ago`);
 
     const org = clerk.organization;
     const tokenOrg = claims.o || {};
-    addRow('Active organisation', org ? `${org.name} (${org.id})` : 'None selected', !!org);
-    addRow('Role in token', tokenOrg.rol || claims.org_role || '(none)');
-    const perms = [].concat(tokenOrg.per ? String(tokenOrg.per).split(',') : [], claims.org_permissions || []);
-    addRow('Permissions in token', perms.length ? perms.join(', ') : '(none)');
-    const membership = org ? (await user.getOrganizationMemberships()).data.find((m) => m.organization.id === org.id) : null;
-    const avdPerms = membership ? membership.permissions.filter((p) => p.startsWith('org:avd:')) : [];
-    addRow('AVD permissions (org:avd:*)', avdPerms.length ? avdPerms.join(', ') : 'None yet: add the avd feature and roles in Clerk', avdPerms.length > 0);
+    const role = tokenOrg.rol || (claims.org_role || '').replace(/^org:/, '');
+    addRow('Active organisation (o.id)', org ? `${org.name} (${tokenOrg.id || 'not in token'})` : 'None selected: choose or create one below', !!org && tokenOrg.id === org.id);
+    addRow('Clerk role (o.rol)', role || '(none)');
+    // ADR 0018: only Clerk's admin role may request AVD; AVD roles themselves live in the control plane.
+    addRow('Can enable AVD for this organisation', role === 'admin' ? 'Yes: you are this organisation\'s admin' : 'No: only the organisation\'s admin can request AVD', role === 'admin');
+    addRow('AVD role', 'Stored by AVD Deploy once the organisation is approved (comes with the API)');
     clerk.mountOrganizationSwitcher(el('org-switcher'));
   }
 
