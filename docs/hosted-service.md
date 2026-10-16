@@ -6,7 +6,7 @@ Andy Kemp Consulting (AKC) hosts the portal. A customer signs up, connects their
 
 ## Customer journey
 
-1. **Sign up** at `avd-deploy.andykemp.com`, or just sign in with an existing andykemp.com account (the same Clerk instance as AKC's other apps). Create or choose an organisation, enable AVD for it, and invite colleagues as reader, operator, approver or admin.
+1. **Sign up** at `avd-deploy.andykemp.com`, or just sign in with an existing andykemp.com account (the same Clerk instance as AKC's other apps). Create or choose an organisation and request AVD for it. During the private beta AKC approves the organisation, and the requester becomes its first AVD Admin ([ADR 0018](adr/0018-accounts-and-tenant-connection.md)). They then invite colleagues as reader, operator, approver or admin.
 2. **Connect tenant** (organisation admin, once). A customer Global Administrator or Cloud Application Administrator approves the "AKC AVD Deploy" app on the admin consent page. The portal records the tenant against the organisation.
 3. **Link Microsoft account** (each operator, once). Sign in with your own work account in that tenant.
 4. **Onboard a subscription** (someone with Owner on it, once per subscription). The portal shows exactly what it will do, then, as that person:
@@ -40,7 +40,7 @@ flowchart LR
 
 | Component | Choice | Notes |
 | --- | --- | --- |
-| Front end | Azure Static Web Apps **Standard** (already created) | Static TypeScript/React build with Clerk's front-end SDK. Reuses the layout of `web/index.html`. |
+| Front end | Azure Static Web Apps (`swa-avddeploy-portal`, currently Free; move to **Standard** for the linked API) | Static TypeScript/React build with Clerk's front-end SDK. Follows the www.andykemp.com look and feel: coppersite's design tokens (`src/styles/global.css`), light by default with the same `akc-theme` dark toggle, AKC logo header, and a Clerk `appearance` built from those tokens so sign-in and the user menu match. [portal/web/index.html](../portal/web/index.html) is the reference. |
 | API | TypeScript (Node) on Azure Container Apps, linked to the Static Web App as its backend so `/api` is same-origin | Standard plan required for linking. The API validates the Clerk bearer token itself; it never trusts Static Web Apps identity headers. Linked APIs have a 45-second request limit, so anything longer becomes a job. Clerk and MSAL Node SDKs are first-class. |
 | Accounts | The existing andykemp.com Clerk production instance, with organisations and AVD-specific permissions (`org:avd:*`) | Tokens verified with `authorizedParties` pinned to the AVD origin. [ADR 0018](adr/0018-accounts-and-tenant-connection.md) |
 | Domain | `avd-deploy.andykemp.com` on the Static Web App custom domain with its free managed certificate | DNS: one `CNAME` to the Static Web App's `*.azurestaticapps.net` address, DNS-only in Cloudflare. If the zone has a CAA record, allow `digicert.com`. The API's Container Apps address is not published as a custom domain. |

@@ -1,46 +1,145 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#ffffff">
 <title>AVD Deploy - sign-in check</title>
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<script>
+  // Same theme switch as www.andykemp.com: light unless the visitor chose dark (stored per site).
+  try {
+    if (localStorage.getItem('akc-theme') === 'dark') {
+      document.documentElement.dataset.theme = 'dark';
+      document.querySelector('meta[name="theme-color"]').setAttribute('content', '#090909');
+    }
+  } catch (e) { /* storage unavailable: stay light */ }
+</script>
 <style>
-  :root { --accent: #0f6cbd; --bg: #f5f7fa; --card: #fff; --text: #1b1b1b; --muted: #5c6670; --ok: #107c10; --bad: #a4262c; --border: #e1e4e8; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #16181c; --card: #1f2227; --text: #eceef1; --muted: #9aa3ad; --border: #33373d; --ok: #54b054; --bad: #e0656b; } }
+  /* Design tokens from coppersite (www.andykemp.com) src/styles/global.css. */
+  :root {
+    --colour-bg: #090909; --colour-bg-soft: #11100f; --colour-panel: #171310; --colour-panel-raised: #1d1713;
+    --colour-header-bg: rgba(9, 9, 9, 0.95);
+    --colour-copper: #bd7448; --colour-copper-light: #e0a070; --colour-copper-dark: #7e4329; --colour-copper-strong: #a35c35;
+    --colour-on-copper: #ffffff;
+    --colour-white: #f7f4f1; --colour-text: #d8d1cb; --colour-muted: #aaa19a;
+    --colour-border: rgba(193, 116, 71, 0.30); --colour-border-strong: rgba(213, 145, 94, 0.55);
+    --colour-focus: #f2b37d;
+    --colour-success: #7fbf63; --colour-danger: #f87171;
+    --font-sans: Inter, Aptos, "Segoe UI", system-ui, -apple-system, sans-serif;
+    --font-mono: "Cascadia Mono", Consolas, "Courier New", monospace;
+    --radius-sm: 4px; --radius-md: 8px; --radius-lg: 12px;
+  }
+  html[data-theme='light'] {
+    --colour-bg: #ffffff; --colour-bg-soft: #f7f3ef; --colour-panel: #ffffff; --colour-panel-raised: #f4ede6;
+    --colour-header-bg: rgba(255, 255, 255, 0.96);
+    --colour-copper: #8a4e2e; --colour-copper-light: #75401f; --colour-copper-dark: #60351f; --colour-copper-strong: #8a4e2e;
+    --colour-white: #201a16; --colour-text: #302923; --colour-muted: #625850;
+    --colour-border: rgba(117, 64, 31, 0.22); --colour-border-strong: rgba(117, 64, 31, 0.42);
+    --colour-focus: #75401f;
+    --colour-success: #42683a; --colour-danger: #b42318;
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); }
-  header { background: var(--accent); color: #fff; padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-  header h1 { font-size: 18px; margin: 0; font-weight: 600; }
-  main { max-width: 860px; margin: 20px auto 60px; padding: 0 16px; }
-  section { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; margin-bottom: 16px; }
-  h2 { font-size: 15px; margin: 0 0 10px; }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  td { padding: 6px 4px; border-top: 1px solid var(--border); vertical-align: top; word-break: break-word; }
-  td:first-child { color: var(--muted); width: 38%; }
-  .ok { color: var(--ok); font-weight: 600; }
-  .bad { color: var(--bad); font-weight: 600; }
-  pre { background: var(--bg); padding: 10px; border-radius: 6px; overflow-x: auto; font-size: 12px; margin: 0; }
-  p { color: var(--muted); font-size: 14px; margin: 0 0 10px; }
+  html { font-size: 16px; -webkit-font-smoothing: antialiased; }
+  body { margin: 0; font-family: var(--font-sans); line-height: 1.6; background: var(--colour-bg-soft); color: var(--colour-text); }
+  ::selection { background: var(--colour-copper); color: var(--colour-on-copper); }
+  a { color: var(--colour-copper-light); text-decoration: none; }
+  a:hover { color: var(--colour-copper); }
+  :focus-visible { outline: 2px solid var(--colour-focus); outline-offset: 2px; }
+
+  .site-header { position: sticky; top: 0; z-index: 10; background: var(--colour-header-bg); backdrop-filter: blur(10px); border-bottom: 1px solid var(--colour-border); padding: 0.875rem 0; }
+  .header-inner { max-width: 1440px; margin: 0 auto; padding: 0 clamp(1rem, 4vw, 4rem); display: flex; align-items: center; gap: 1rem; }
+  .brand { display: flex; align-items: center; gap: 1rem; color: var(--colour-white); }
+  .logo { height: 56px; width: auto; display: block; }
+  .logo--dark { display: none; }
+  html[data-theme='dark'] .logo--light { display: none; }
+  html[data-theme='dark'] .logo--dark { display: block; }
+  .product { font-weight: 700; font-size: 1.125rem; padding-left: 1rem; border-left: 1px solid var(--colour-border-strong); }
+  .header-actions { margin-left: auto; display: flex; align-items: center; gap: 0.75rem; }
+  .theme-toggle { width: 38px; height: 38px; border-radius: var(--radius-md); border: 1px solid var(--colour-border-strong); background: transparent; color: var(--colour-text); cursor: pointer; font-size: 1rem; }
+  .theme-toggle:hover { border-color: var(--colour-copper); color: var(--colour-copper); }
+
+  main { max-width: 960px; margin: 2rem auto 4rem; padding: 0 clamp(1rem, 4vw, 2rem); }
+  .eyebrow { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--colour-copper); margin: 0 0 0.5rem; }
+  h1 { color: var(--colour-white); font-size: clamp(1.75rem, 3.5vw, 2.5rem); line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 0.5rem; }
+  h2 { color: var(--colour-white); font-size: 1.25rem; line-height: 1.2; margin: 0 0 1rem; }
+  .lead { color: var(--colour-muted); margin: 0 0 2rem; }
+  .card { background: var(--colour-panel); border: 1px solid var(--colour-border); border-radius: var(--radius-lg); padding: 1.5rem 2rem; margin-bottom: 1.5rem; }
+  .card p { color: var(--colour-muted); margin: 0 0 1rem; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.9375rem; }
+  td { padding: 0.75rem 0.25rem; border-top: 1px solid var(--colour-border); vertical-align: top; word-break: break-word; }
+  td:first-child { color: var(--colour-muted); width: 36%; }
+  .pill { display: inline-block; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; padding: 0.15rem 0.6rem; border-radius: 999px; margin-right: 0.5rem; border: 1px solid; }
+  .pill.ok { color: var(--colour-success); border-color: var(--colour-success); }
+  .pill.bad { color: var(--colour-danger); border-color: var(--colour-danger); }
+  pre { background: var(--colour-panel-raised); border: 1px solid var(--colour-border); border-radius: var(--radius-md); padding: 1rem; overflow-x: auto; font-family: var(--font-mono); font-size: 0.8125rem; margin: 0; color: var(--colour-text); }
+  #org-switcher { margin-top: 1rem; }
+  @media (max-width: 640px) { .product { display: none; } .logo { height: 44px; } .card { padding: 1.25rem; } td:first-child { width: 42%; } }
 </style>
 </head>
 <body>
-<header><h1>AVD Deploy</h1><div id="user-button"></div></header>
+<header class="site-header">
+  <div class="header-inner">
+    <a class="brand" href="https://www.andykemp.com" aria-label="Andy Kemp Consulting home">
+      <img class="logo logo--light" src="/assets/akc-logo-light.png" alt="Andy Kemp Consulting" width="475" height="182">
+      <img class="logo logo--dark" src="/assets/akc-logo-dark.png" alt="Andy Kemp Consulting" width="475" height="182">
+    </a>
+    <span class="product">AVD Deploy</span>
+    <div class="header-actions">
+      <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch light or dark theme">◐</button>
+      <div id="user-button"></div>
+    </div>
+  </div>
+</header>
 <main>
-  <section id="status"><h2>Sign-in check</h2><p id="message">Loading Clerk…</p><div id="sign-in"></div></section>
-  <section id="checks" hidden><h2>Checks</h2><table><tbody id="check-rows"></tbody></table></section>
-  <section id="claims" hidden><h2>Session token claims</h2><p>Decoded in your browser for checking only. The real API verifies the signature.</p><pre id="claims-json"></pre></section>
+  <p class="eyebrow">AVD Deploy</p>
+  <h1>Sign-in check</h1>
+  <p class="lead">Confirms this site uses the shared andykemp.com account and that your session carries the AVD permissions.</p>
+  <section class="card" id="status"><h2>Status</h2><p id="message">Loading…</p><div id="sign-in"></div></section>
+  <section class="card" id="checks" hidden><h2>Checks</h2><table><tbody id="check-rows"></tbody></table><div id="org-switcher"></div></section>
+  <section class="card" id="claims" hidden><h2>Session token claims</h2><p>Decoded in your browser for checking only. The real API verifies the signature.</p><pre id="claims-json"></pre></section>
 </main>
 <script>
-  // The publishable key is public (it is in every Clerk front end). Paste yours here: Clerk Dashboard > API keys.
+  // The publishable key is public (it is in every Clerk front end).
   const PUBLISHABLE_KEY = 'pk_live_Y2xlcmsuYW5keWtlbXAuY29tJA';
   const EXPECTED_ISSUER_HOST = 'clerk.andykemp.com';
 
   const el = (id) => document.getElementById(id);
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+  el('theme-toggle').addEventListener('click', () => {
+    const dark = document.documentElement.dataset.theme !== 'dark';
+    try { localStorage.setItem('akc-theme', dark ? 'dark' : 'light'); } catch (e) { /* not stored */ }
+    location.reload(); // Clerk's components take their colours at load.
+  });
+
+  // Clerk components in the AKC palette, read from the CSS tokens so light and dark both match.
+  function clerkAppearance() {
+    return {
+      variables: {
+        colorPrimary: css('--colour-copper-strong'),
+        colorForeground: css('--colour-white'),
+        colorText: css('--colour-white'),
+        colorMutedForeground: css('--colour-muted'),
+        colorTextSecondary: css('--colour-muted'),
+        colorBackground: css('--colour-panel'),
+        colorInput: css('--colour-panel'),
+        colorInputBackground: css('--colour-panel'),
+        colorInputForeground: css('--colour-text'),
+        colorInputText: css('--colour-text'),
+        colorNeutral: css('--colour-text'),
+        colorDanger: css('--colour-danger'),
+        colorSuccess: css('--colour-success'),
+        fontFamily: css('--font-sans'),
+        borderRadius: '8px',
+      },
+    };
+  }
 
   function frontendApiFromKey(key) {
     // A publishable key is pk_live_ + base64("<frontend api host>$").
-    const encoded = key.split('_').slice(2).join('_');
-    return atob(encoded).replace(/\$$/, '');
+    return atob(key.split('_').slice(2).join('_')).replace(/\$$/, '');
   }
 
   function loadScript(src, attrs) {
@@ -64,8 +163,8 @@
     const b = document.createElement('td');
     if (pass !== undefined) {
       const tag = document.createElement('span');
-      tag.className = pass ? 'ok' : 'bad';
-      tag.textContent = pass ? 'PASS ' : 'CHECK ';
+      tag.className = 'pill ' + (pass ? 'ok' : 'bad');
+      tag.textContent = pass ? 'Pass' : 'Check';
       b.appendChild(tag);
     }
     b.appendChild(document.createTextNode(value));
@@ -74,14 +173,10 @@
   }
 
   async function main() {
-    if (PUBLISHABLE_KEY.includes('REPLACE_ME')) {
-      el('message').textContent = 'Add your publishable key to PUBLISHABLE_KEY in index.html, then redeploy.';
-      return;
-    }
     const fapi = frontendApiFromKey(PUBLISHABLE_KEY);
     await loadScript(`https://${fapi}/npm/@clerk/ui@1/dist/ui.browser.js`);
     await loadScript(`https://${fapi}/npm/@clerk/clerk-js@6/dist/clerk.browser.js`, { 'data-clerk-publishable-key': PUBLISHABLE_KEY });
-    await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor } });
+    await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor }, appearance: clerkAppearance() });
     const clerk = window.Clerk;
 
     if (!clerk.isSignedIn) {
@@ -105,22 +200,20 @@
     addRow('Issuer (iss)', claims.iss || '(missing)', claims.iss === `https://${EXPECTED_ISSUER_HOST}`);
     addRow('Authorised party (azp)', claims.azp || '(missing)', claims.azp === location.origin);
     addRow('This page origin', location.origin);
+    // fva = [minutes since first factor, minutes since second factor]; -1 means no second factor this session.
+    const secondFactor = Array.isArray(claims.fva) ? claims.fva[1] : undefined;
+    addRow('Second factor (MFA)', secondFactor === undefined ? '(not in token)' : secondFactor < 0 ? 'Not used this session: needed for Approver and Admin' : `Used ${secondFactor} minute(s) ago`, secondFactor !== undefined && secondFactor >= 0);
 
     const org = clerk.organization;
     const tokenOrg = claims.o || {};
     addRow('Active organisation', org ? `${org.name} (${org.id})` : 'None selected', !!org);
-    const role = tokenOrg.rol || claims.org_role || '(none)';
-    addRow('Role in token', role);
+    addRow('Role in token', tokenOrg.rol || claims.org_role || '(none)');
     const perms = [].concat(tokenOrg.per ? String(tokenOrg.per).split(',') : [], claims.org_permissions || []);
     addRow('Permissions in token', perms.length ? perms.join(', ') : '(none)');
     const membership = org ? (await user.getOrganizationMemberships()).data.find((m) => m.organization.id === org.id) : null;
     const avdPerms = membership ? membership.permissions.filter((p) => p.startsWith('org:avd:')) : [];
     addRow('AVD permissions (org:avd:*)', avdPerms.length ? avdPerms.join(', ') : 'None yet: add the avd feature and roles in Clerk', avdPerms.length > 0);
-    if (!org) {
-      const sw = document.createElement('div');
-      el('checks').appendChild(sw);
-      clerk.mountOrganizationSwitcher(sw);
-    }
+    clerk.mountOrganizationSwitcher(el('org-switcher'));
   }
 
   main().catch((e) => { el('message').textContent = 'Error: ' + e.message; });
