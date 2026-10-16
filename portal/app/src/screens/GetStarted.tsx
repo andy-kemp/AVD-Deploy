@@ -4,6 +4,7 @@
 import { useMemo, useState } from 'react';
 import { useOrganizationList, useUser } from '@clerk/react';
 import { message, useApi, type Me } from '../api';
+import { Hero } from '../Chrome';
 
 // Free email providers don't name an organisation.
 const personalDomains = /^(gmail|googlemail|outlook|hotmail|live|msn|icloud|me|yahoo|aol|proton|protonmail)\./i;
@@ -60,9 +61,9 @@ export function GetStarted({ me, onRequested }: { me: Me; onRequested: () => Pro
 
   return (
     <>
-      <p className="eyebrow">Get started</p>
-      <h1>Set up AVD Deploy for your organisation</h1>
-      <p className="lead">AVD Deploy builds Azure Virtual Desktop in your own Azure subscription. Start by choosing the organisation you'll use it for.</p>
+      <Hero eyebrow="Get started" title="Set up AVD Deploy for your organisation">
+        AVD Deploy builds Azure Virtual Desktop in your own Azure subscription. Start by choosing the organisation you'll use it for.
+      </Hero>
 
       <section className="card">
         <h2><span className="step">1</span>Your organisation</h2>

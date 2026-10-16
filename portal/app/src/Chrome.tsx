@@ -6,14 +6,29 @@ export function SiteHeader({ children }: { children?: ReactNode }) {
     <header className="site-header">
       <div className="wrap">
         <div className="brand">
-          <a href="https://www.andykemp.com" aria-label="Andy Kemp Consulting home">
-            <img className="logo" src="/assets/akc-logo-light.png" alt="Andy Kemp Consulting" width={475} height={182} />
+          {/* AKC Tools wordmark, as on tools.andykemp.com (self-hosted copy of /images/akc-tools-logo.webp). */}
+          <a href="https://tools.andykemp.com" aria-label="Andy Kemp Tools home">
+            <img className="logo" src="/assets/akc-tools-logo.webp" alt="Andy Kemp Tools" width={416} height={120} />
           </a>
           <a className="subtitle" href="/">AVD Deploy</a>
         </div>
         <nav className="header-nav" aria-label="Main navigation">{children}</nav>
       </div>
     </header>
+  );
+}
+
+// Page heading with Atlas, the AVD Deploy robot, beside it on wider screens.
+export function Hero({ eyebrow, title, children }: { eyebrow: string; title: string; children?: ReactNode }) {
+  return (
+    <div className="hero">
+      <div className="hero-text">
+        <p className="eyebrow">{eyebrow}</p>
+        <h1>{title}</h1>
+        {children && <div className="lead">{children}</div>}
+      </div>
+      <img className="hero-image" src="/assets/atlas-avd.png" alt="" width={560} height={588} />
+    </div>
   );
 }
 
