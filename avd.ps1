@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Validate', 'Build', 'New', 'Expand', 'AddUser', 'Preview', 'Deploy', 'PostDeploy', 'Web')]
+    [ValidateSet('Validate', 'Build', 'New', 'Expand', 'AddUser', 'Preview', 'Deploy', 'PostDeploy', 'Web', 'Foundation')]
     [string]$Mode,
     # New: the base configuration. Expand/AddUser: the saved configuration of the existing V2 deployment.
     [string]$ConfigurationFile = (Join-Path $PSScriptRoot 'config/avd.example.json'),
@@ -58,6 +58,14 @@ param(
     [string]$OperatorPublicIp,
     # New: answers downloaded from the portal (contracts/avd-answers.schema.json), used instead of prompts and discovery parameters.
     [string]$AnswersFile,
+    # New (portal worker, ADR 0018): no Graph calls. Group IDs come from the portal, which resolved or created them as the operator,
+    # and the AVD service principal object ID is supplied with -AvdServicePrincipalObjectId.
+    [switch]$PortalWorker,
+    [ValidatePattern('^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$')]
+    [string]$AvdServicePrincipalObjectId,
+    # Foundation: the portal worker managed identity that the foundation grants access to the AVD resource group.
+    [ValidatePattern('^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$')]
+    [string]$WorkerPrincipalObjectId,
     # PostDeploy: Ask before excluding the storage app from MFA Conditional Access policies, Exclude without asking, or Report only.
     [ValidateSet('Ask', 'Exclude', 'Report')]
     [string]$ConditionalAccess = 'Ask',
@@ -447,6 +455,11 @@ function ConvertTo-CanonicalConfiguration {
 function Resolve-EntraGroup {
     param([string]$Value, [Parameter(Mandatory)][string]$Question)
 
+    if ($PortalWorker) {
+        # The portal resolved or created this group as the operator; the worker has no Graph rights.
+        if ($Value -notmatch '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$') { throw 'The portal worker needs group object IDs, not names.' }
+        return $Value
+    }
     while ($true) {
         $search = if ($Value) { $Value } else { Read-Text -Question $Question }
         if ($search -match '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$') {
@@ -485,6 +498,7 @@ function Select-EntraGroup {
     if ($Existing) {
         return [pscustomobject]@{ Id = (Resolve-EntraGroup -Value $Existing -Question "AVD $Role group"); Created = $false }
     }
+    if ($PortalWorker) { throw "The portal worker cannot create Entra groups; the portal creates the $Role group first." }
     $create = if ($NewName) { $true } else {
         (Read-Choice -Question "AVD $Role group?" -Options ([ordered]@{
                 Existing = 'Use an existing Entra group'
@@ -691,7 +705,10 @@ function Invoke-AzureDiscovery {
         }
     } while ($adminsChoice.Id -eq $Configuration.accessGroups.usersObjectId)
     $Configuration.accessGroups.adminsObjectId = $adminsChoice.Id
-    $Configuration.identity.avdServicePrincipalObjectId = Get-AvdServicePrincipalObjectId
+    $Configuration.identity.avdServicePrincipalObjectId = if ($PortalWorker) {
+        if (-not $AvdServicePrincipalObjectId) { throw 'The portal worker needs -AvdServicePrincipalObjectId.' }
+        $AvdServicePrincipalObjectId
+    } else { Get-AvdServicePrincipalObjectId }
 
     # Key Vault, admin password secret, deployment identity and release-pinned prep script
     $foundation.keyVault = [ordered]@{ name = $names.keyVault }
@@ -1421,6 +1438,44 @@ if ($Mode -eq 'PostDeploy') {
     foreach ($item in $post.Done) { Write-Output "  Done: $item" }
     Write-Output 'Still to do (manual):'
     foreach ($task in @($post.Manual) + 'Sign in as an ordinary (non-admin) test user from the AVD users group and confirm the desktop launches and the profile persists.') { Write-Output "  - $task" }
+}
+
+if ($Mode -eq 'Foundation') {
+    # What the foundation still needs, as an ARM deployment the portal submits with the operator's own rights (ADR 0018).
+    if (-not $PSBoundParameters.ContainsKey('ConfigurationFile') -or -not $OutputFile) {
+        throw 'Foundation needs -ConfigurationFile and -OutputFile.'
+    }
+    if (-not $configuration.Contains('foundation')) { throw 'This configuration has no foundation section.' }
+    Assert-AvdAzureTooling
+    $null = Connect-AvdAzure -TenantId $configuration.tenantId -SubscriptionId $configuration.subscriptionId
+    $state = Get-AvdFoundationState -Configuration $configuration -WorkerPrincipalObjectId $WorkerPrincipalObjectId
+    $unregistered = @(Get-AvdProviderState -Configuration $configuration)
+    $foundationPath = Join-Path $PSScriptRoot 'infra/avd/foundation.bicep'
+    $bicep = Get-Command bicep -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $bicep) { throw 'Foundation needs the Bicep CLI on PATH to compile the foundation template.' }
+    $templateJson = (& $bicep.Source build $foundationPath --stdout) -join "`n"
+    if ($LASTEXITCODE -ne 0) { throw "Bicep compilation failed for '$foundationPath'." }
+    $parameters = [ordered]@{}
+    foreach ($entry in (Get-AvdFoundationParameters -Configuration $configuration -State $state -WorkerPrincipalObjectId $WorkerPrincipalObjectId).GetEnumerator()) {
+        $parameters[$entry.Key] = @{ value = $entry.Value }
+    }
+    $request = [ordered]@{
+        requestVersion        = '1.0.0'
+        tenantId              = $configuration.tenantId
+        subscriptionId        = $configuration.subscriptionId
+        location              = $configuration.target.location
+        resourceGroup         = $configuration.target.resourceGroupName
+        needed                = ($state.Missing.Count -gt 0 -or $unregistered.Count -gt 0)
+        missing               = @($state.Missing)
+        unregisteredProviders = $unregistered
+        # The operator's browser generates the password, so it never reaches the worker or storage.
+        needsAdminPassword    = [bool]$state.Secret
+        parameters            = $parameters
+        template              = ConvertFrom-Json -InputObject $templateJson -AsHashtable -Depth 100
+    }
+    [System.IO.File]::WriteAllText([System.IO.Path]::GetFullPath($OutputFile), ($request | ConvertTo-Json -Depth 100) + [Environment]::NewLine)
+    Write-Output "Foundation request written: $OutputFile"
+    Write-Output $(if ($request.needed) { "Still needed: $(@($state.Missing) + @($unregistered | ForEach-Object { "provider $_" }) -join ', ')" } else { 'Foundation already in place.' })
 }
 
 if ($Mode -eq 'Build') {

@@ -437,6 +437,21 @@ try {
     Invoke-InvalidConfigurationCase -Value $displayConfiguration -Name 'display-markup'
     Write-Pass 'contract 1.5.0 adds display names and FSLogix options and rejects them on older versions.'
 
+    # ADR 0018: the portal worker may assign exactly the roles the workload templates assign, no more and no fewer.
+    $infraRoot = Join-Path $v2Root 'infra/avd'
+    $guidPattern = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+    $workloadRoles = @(Get-ChildItem -LiteralPath $infraRoot -Filter '*.bicep' -Recurse -File |
+            Where-Object { $_.Name -notlike 'foundation*' } |
+            ForEach-Object { [regex]::Matches([System.IO.File]::ReadAllText($_.FullName), "(?:roleDefinitions', '|roleId: '|Role = ')($guidPattern)'") } |
+            ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+    $workerAccess = [System.IO.File]::ReadAllText((Join-Path $infraRoot 'modules/foundation-worker-access.bicep'))
+    $bicepRoles = @([regex]::Matches([regex]::Match($workerAccess, "var assignableRoles = '([^']+)'").Groups[1].Value, $guidPattern) | ForEach-Object { $_.Value } | Sort-Object -Unique)
+    $moduleText = [System.IO.File]::ReadAllText((Join-Path $v2Root 'lib/AvdDeployment.psm1'))
+    $moduleRoles = @([regex]::Matches([regex]::Match($moduleText, '(?s)\$script:WorkerAssignableRoles = @\((.+?)\)').Groups[1].Value, $guidPattern) | ForEach-Object { $_.Value } | Sort-Object -Unique)
+    Assert-True ($workloadRoles.Count -ge 6) "Expected the workload templates to assign at least six roles, found $($workloadRoles.Count)."
+    Assert-True ((($workloadRoles -join ',') -eq ($bicepRoles -join ',')) -and (($workloadRoles -join ',') -eq ($moduleRoles -join ','))) "Worker assignable roles must match the template roles.`n templates: $($workloadRoles -join ', ')`n bicep: $($bicepRoles -join ', ')`n module: $($moduleRoles -join ', ')"
+    Write-Pass 'the portal worker may assign exactly the roles the workload templates assign.'
+
     Write-Host "$script:passed Phase 1 CLI tests passed."
 } finally {
     Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force -ErrorAction SilentlyContinue

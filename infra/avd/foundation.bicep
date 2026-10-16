@@ -24,6 +24,10 @@ param operatorObjectId string = ''
 param operatorPrincipalType string = 'User'
 @description('Azure Virtual Desktop service principal object ID. When set, grants Desktop Virtualization Power On Off Contributor at subscription scope, which AVD requires before a scaling plan can be created.')
 param autoscaleServicePrincipalId string = ''
+@description('Portal worker managed identity object ID (ADR 0018). When set, it gets Contributor, a role-assignment right limited to the AVD access roles, and Key Vault Secrets User on the resource group.')
+param workerPrincipalId string = ''
+@description('Existing VNet outside the resource group that the worker must join: { resourceGroupName, vnetName }.')
+param workerNetwork object?
 
 var powerOnOffRole = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '40c5ff49-9181-41f8-ae61-143b0e78555e')
 
@@ -54,6 +58,22 @@ module resources './modules/foundation-resources.bicep' = {
     operatorPrincipalType: operatorPrincipalType
   }
   dependsOn: [workloadGroup]
+}
+
+module workerAccess './modules/foundation-worker-access.bicep' = if (!empty(workerPrincipalId)) {
+  scope: resourceGroup(resourceGroupName)
+  params: {
+    workerPrincipalId: workerPrincipalId
+  }
+  dependsOn: [workloadGroup]
+}
+
+module workerNetworkAccess './modules/foundation-worker-network.bicep' = if (!empty(workerPrincipalId) && workerNetwork != null) {
+  scope: resourceGroup(workerNetwork.?resourceGroupName ?? resourceGroupName)
+  params: {
+    workerPrincipalId: workerPrincipalId
+    vnetName: workerNetwork.?vnetName ?? ''
+  }
 }
 
 output resourceGroupId string = subscriptionResourceId('Microsoft.Resources/resourceGroups', resourceGroupName)

@@ -23,4 +23,8 @@ export const msalConfig: Configuration = {
 export const armScope = 'https://management.azure.com/user_impersonation';
 // Requested only when the group picker is used; it needs admin consent once per tenant.
 export const groupReadScope = 'https://graph.microsoft.com/GroupMember.Read.All';
+// Creating the AVD groups before a run; admin consent once per tenant.
+export const groupWriteScope = 'https://graph.microsoft.com/Group.ReadWrite.All';
+// Job inputs and results in the worker's storage account (ADR 0018).
+export const storageScope = 'https://storage.azure.com/user_impersonation';
 export const loginRequest = { scopes: ['User.Read', armScope] };

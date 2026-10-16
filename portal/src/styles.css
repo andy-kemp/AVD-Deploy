@@ -5,6 +5,10 @@ body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: va
 header { background: var(--accent); color: #fff; padding: 14px 24px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 header h1 { font-size: 18px; margin: 0; font-weight: 600; }
 header .who { font-size: 13px; opacity: .9; }
+header nav { display: flex; gap: 16px; margin-right: auto; margin-left: 24px; }
+header nav a { color: #fff; font-size: 14px; }
+pre.log { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 12px; white-space: pre-wrap; max-height: 480px; overflow-y: auto; }
+.note button { margin-top: 8px; }
 main { max-width: 920px; margin: 20px auto 60px; padding: 0 16px; }
 section { background: var(--card); border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08); padding: 18px 22px; margin-bottom: 16px; }
 section h2 { font-size: 16px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }

@@ -214,6 +214,10 @@ function global:Get-AzKeyVault {
 }
 function global:Invoke-AzRestMethod {
     param($Method, $Path, $Payload)
+    if ($Method -eq 'GET' -and $Path -match '^(/subscriptions/[^/]+)/providers/Microsoft\.Authorization/roleAssignments\?') {
+        $value = @(if ($global:AvdTest.PowerRole) { @{ properties = @{ scope = $Matches[1]; roleDefinitionId = "$($Matches[1])/providers/Microsoft.Authorization/roleDefinitions/40c5ff49-9181-41f8-ae61-143b0e78555e" } } })
+        return [pscustomobject]@{ StatusCode = 200; Content = (@{ value = $value } | ConvertTo-Json -Depth 5) }
+    }
     if ($Method -eq 'PATCH' -and $Path -match '/virtualMachines/([^/]+)/providers/Microsoft\.Resources/tags/default\?') {
         $tags = ($Payload | ConvertFrom-Json -AsHashtable)
         if ($tags.operation -ne 'Merge' -or -not $tags.properties.tags.ContainsKey('avdv2-kerberos-restart')) { throw 'VM tags must be merged, not replaced.' }

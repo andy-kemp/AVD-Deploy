@@ -29,7 +29,7 @@ $port = $listener.LocalEndpoint.Port
 $listener.Stop()
 
 $bootstrap = @'
-param($CliPath, $Port, $OutputFile, $AnswersFile)
+param($CliPath, $Port, $OutputFile, $AnswersFile, $Worker)
 $ErrorActionPreference = 'Stop'
 foreach ($name in 'Get-AzResourceGroupDeploymentWhatIfResult', 'New-AzResourceGroupDeployment', 'Test-AzResourceGroupDeployment', 'Get-AzRoleAssignment',
     'New-AzRoleAssignment', 'Remove-AzRoleAssignment', 'Get-AzAccessToken', 'Update-AzWvdDesktop', 'Get-AzDeploymentWhatIfResult',
@@ -47,6 +47,9 @@ function global:Get-AzKeyVault { param($VaultName, $ResourceGroupName, $Location
 function global:Get-AzResource { param($ResourceId, $ResourceGroupName, $Name, $ResourceType, $ErrorAction) }
 function global:Invoke-AzRestMethod {
     param($Method, $Path, $Payload)
+    if ($Method -eq 'GET' -and $Path -match '/providers/Microsoft\.Authorization/roleAssignments\?') {
+        return [pscustomobject]@{ StatusCode = 200; Content = '{"value":[]}' }
+    }
     if ($Method -eq 'GET' -and $Path -match '/skus\?') {
         $skus = foreach ($size in 'Standard_D8s_v5', 'Standard_D8as_v5') {
             @{ resourceType = 'virtualMachines'; name = $size; family = $(if ($size -like '*as_v5') { 'standardDASv5Family' } else { 'standardDSv5Family' })
@@ -88,6 +91,13 @@ function global:New-AzADGroupOwner { param($GroupId, $OwnerId, $ErrorAction) }
 function global:Add-AzADGroupMember { param($TargetGroupObjectId, $MemberObjectId, $ErrorAction, $WarningAction) }
 function global:Get-AzADUser { param([switch]$SignedIn, $ErrorAction) [pscustomobject]@{ Id = '77777777-0000-4000-8000-000000000007' } }
 function global:Get-AzADServicePrincipal { param($ApplicationId, $ErrorAction) [pscustomobject]@{ Id = '66666666-6666-4666-8666-666666666666' } }
+if ($Worker) {
+    # The portal worker has no Graph rights, so any directory lookup is a failure.
+    foreach ($name in 'Get-AzADGroup', 'New-AzADGroup', 'Get-AzADServicePrincipal', 'Get-AzADUser') { Set-Item -Path "Function:\global:$name" -Value { throw 'Graph called by the portal worker' } }
+    & $CliPath -Mode New -AnswersFile $AnswersFile -OutputFile $OutputFile -Force -PortalWorker -AvdServicePrincipalObjectId '66666666-6666-4666-8666-666666666666'
+    & $CliPath -Mode Foundation -ConfigurationFile $OutputFile -OutputFile "$OutputFile.foundation.json" -WorkerPrincipalObjectId '99999999-9999-4999-8999-999999999999'
+    return
+}
 if ($AnswersFile) { & $CliPath -Mode New -AnswersFile $AnswersFile -OutputFile $OutputFile -Force; return }
 & $CliPath -Mode Web -NoBrowser -Port $Port -OutputFile $OutputFile
 '@
@@ -258,6 +268,18 @@ try {
     $run = & $runAnswers
     Assert-True ($run.ExitCode -ne 0 -and $run.Text -match 'Prefix') "An invalid prefix must be rejected by the answers schema, got $($run.Text)"
     Write-Pass 'portal answers files are schema-validated and generate the same configuration as the wizard.'
+
+    # Portal worker (ADR 0018): generation without Graph, then the foundation request the portal submits as the operator.
+    $portalAnswers.Prefix = 'PRT'
+    [System.IO.File]::WriteAllText($answersPath, ($portalAnswers | ConvertTo-Json))
+    $text = (& (Get-Process -Id $PID).Path -NoProfile -File $bootstrapPath (Join-Path $v2Root 'avd.ps1') 0 $portalOutput $answersPath $true 2>&1) -join "`n"
+    Assert-True ($LASTEXITCODE -eq 0) "Portal worker generation or Foundation failed: $text"
+    $config = Get-Content -LiteralPath $portalOutput -Raw | ConvertFrom-Json -AsHashtable
+    Assert-True ($config.accessGroups.usersObjectId -eq '44444444-4444-4444-8444-444444444444' -and $config.identity.avdServicePrincipalObjectId -eq '66666666-6666-4666-8666-666666666666') 'The worker should use the portal group IDs and the supplied AVD service principal without Graph.'
+    $request = Get-Content -LiteralPath "$portalOutput.foundation.json" -Raw | ConvertFrom-Json -AsHashtable
+    Assert-True ($request.needed -and @($request.missing) -contains 'ResourceGroup' -and @($request.missing) -contains 'WorkerAccess' -and $request.needsAdminPassword) "The foundation request should list what is missing, got $(@($request.missing) -join ', ')"
+    Assert-True ($request.parameters.workerPrincipalId.value -eq '99999999-9999-4999-8999-999999999999' -and $request.parameters.workerNetwork.value.vnetName -eq 'vnet-existing' -and -not $request.parameters.ContainsKey('adminPassword') -and $request.template.resources) 'The request should grant the worker access, include the existing VNet, carry the compiled template and never a password.'
+    Write-Pass 'the portal worker generates without Graph and writes a foundation request that grants it scoped access.'
 
     Write-Host "$passed web wizard tests passed."
 } finally {

@@ -21,7 +21,8 @@ Customers install this portal into **their own Azure subscription and Entra tena
 - [ADR 0013](adr/0013-foundation-stage.md): subscription selection and Azure discovery in `New`, plus the foundation stage that creates the resource group, network with NAT, Key Vault with generated password, and deployment identity ([discovery module](../lib/AvdDiscovery.psm1), [foundation Bicep](../infra/avd/foundation.bicep)).
 - [ADR 0014](adr/0014-local-web-wizard.md): `-Mode Web`, a local browser wizard with dropdowns and a group picker that writes the same configuration ([page](../web/index.html)).
 - [ADR 0015](adr/0015-post-deploy-configuration.md): display names users see, FSLogix sign-in protection, and `-Mode PostDeploy` for the Entra RDP setting, storage app consent/tag/private-link names, Conditional Access exclusion and FSLogix folder permissions ([post-deploy module](../lib/AvdPostDeploy.psm1)).
-- [ADR 0017](adr/0017-portal-mvp-browser-discovery.md): portal MVP with single-tenant Entra sign-in (MSAL) and browser-direct ARM discovery; Preview and Deploy stay in the CLI ([portal](../portal/README.md)).
+- [ADR 0017](adr/0017-portal-mvp-browser-discovery.md): portal MVP with single-tenant Entra sign-in (MSAL) and browser-direct ARM discovery ([portal](../portal/README.md)).
+- [ADR 0018](adr/0018-portal-worker.md): Preview and Deploy from the portal through a Container Apps Job; the operator prepares each resource group's foundation and the worker's scoped access with their own rights ([worker script](../scripts/portal-worker.ps1), [install script](../scripts/install-portal-worker.ps1)).
 
 ## Phase 1 local CLI
 

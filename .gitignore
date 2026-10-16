@@ -1,3 +1,9 @@
 # Local sandbox configurations and Preview plans can contain real tenant, subscription and user IDs.
 sandbox/
 *.plan.json
+
+# Pinned tools downloaded by scripts/deploy-portal.ps1.
+.tools/
+
+# Configurations downloaded from the portal contain real tenant and subscription IDs.
+/*-config.json

@@ -8,6 +8,12 @@ $script:V2Root = Split-Path $PSScriptRoot -Parent
 $script:PowerOnOffRoleId = '40c5ff49-9181-41f8-ae61-143b0e78555e'
 $script:PlanLifetimeHours = 24
 $script:KerberosRestartTag = 'avdv2-kerberos-restart'
+# Roles the platform templates assign, and so the only roles the portal worker may assign (ADR 0018). Must match
+# assignableRoles in infra/avd/modules/foundation-worker-access.bicep.
+$script:WorkerAssignableRoles = @(
+    '1d18fff3-a72a-46b5-b4a9-0b38a3cd7e63', 'fb879df8-f326-4884-b1cf-06f3ad86be52', '1c0163c0-47e6-4577-8991-ea5c82e286e4',
+    '489581de-a3bd-480d-9518-53dea7416b33', '0c867c2a-1d8c-454a-a3db-ab2ea1bdc8bb', 'a7264617-510b-434b-a828-9731dc254ea7'
+)
 $script:RequiredAzCommands = [ordered]@{
     'Az.Accounts'              = @('Get-AzContext', 'Connect-AzAccount', 'Set-AzContext', 'Get-AzSubscription', 'Invoke-AzRestMethod', 'Get-AzAccessToken')
     'Az.Resources'             = @('Get-AzResourceGroup', 'Get-AzResourceGroupDeploymentWhatIfResult', 'New-AzResourceGroupDeployment', 'Test-AzResourceGroupDeployment', 'Get-AzRoleAssignment',
@@ -186,28 +192,60 @@ function New-AvdAdminPassword {
     return $secure
 }
 
+function Get-AvdRoleAssignments {
+    # Reads role assignments through ARM, so it also works for identities without Graph rights (Get-AzRoleAssignment
+    # resolves principals through Graph). Returns only assignments made exactly at $Scope, or $null when the caller
+    # cannot read assignments.
+    param([Parameter(Mandatory)][string]$Scope, [Parameter(Mandatory)][string]$PrincipalId)
+    $filter = [uri]::EscapeDataString("principalId eq '$PrincipalId'")
+    $response = Invoke-AzRestMethod -Method GET -Path "$Scope/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01&`$filter=$filter"
+    if ($response.StatusCode -ne 200) { return $null }
+    return , @(($response.Content | ConvertFrom-Json).value | Where-Object { $_.properties.scope -eq $Scope })
+}
+
+function Test-AvdRoleAssigned {
+    # $true/$false, or $null when the caller cannot read assignments.
+    param([Parameter(Mandatory)][string]$Scope, [Parameter(Mandatory)][string]$PrincipalId, [Parameter(Mandatory)][string]$RoleId)
+    $assignments = Get-AvdRoleAssignments -Scope $Scope -PrincipalId $PrincipalId
+    if ($null -eq $assignments) { return $null }
+    return @($assignments | Where-Object { $_.properties.roleDefinitionId -match "/$RoleId$" }).Count -gt 0
+}
+
+function Test-AvdWorkerAccess {
+    # The portal worker's grants on the resource group are complete and current: Contributor, Key Vault Secrets User,
+    # and the conditioned role-assignment right covering every role the templates assign (ADR 0018). An older condition
+    # missing a role counts as incomplete, so Prepare is offered again and updates it.
+    param([Parameter(Mandatory)][string]$Scope, [Parameter(Mandatory)][string]$PrincipalId)
+    $assignments = Get-AvdRoleAssignments -Scope $Scope -PrincipalId $PrincipalId
+    if (-not $assignments) { return $false }
+    $has = { param($role) @($assignments | Where-Object { $_.properties.roleDefinitionId -match "/$role$" }) }
+    $limited = & $has 'f58310d9-a9f6-439a-9e8d-f62e7b41a168' | Select-Object -First 1
+    if (-not (& $has 'b24988ac-6180-42a0-ab88-20f7382dd24c') -or -not (& $has '4633458b-17de-408a-b874-0445c86b69e6') -or -not $limited) { return $false }
+    $condition = if ($limited.properties.PSObject.Properties['condition']) { [string]$limited.properties.condition } else { '' }
+    return @($script:WorkerAssignableRoles | Where-Object { $condition -notmatch $_ }).Count -eq 0
+}
+
 function Test-AvdAutoscaleRole {
     # Present, Missing or Unknown (when the caller cannot read role assignments).
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Configuration)
-    $scope = "/subscriptions/$($Configuration.subscriptionId)"
-    try {
-        $assignments = @(Get-AzRoleAssignment -ObjectId $Configuration.identity.avdServicePrincipalObjectId -Scope $scope -ErrorAction Stop |
-                Where-Object { $_.RoleDefinitionId -match $script:PowerOnOffRoleId -and $_.Scope -eq $scope })
-        if ($assignments.Count -gt 0) { return 'Present' }
-        return 'Missing'
-    } catch {
-        return 'Unknown'
-    }
+    $assigned = Test-AvdRoleAssigned -Scope "/subscriptions/$($Configuration.subscriptionId)" -PrincipalId $Configuration.identity.avdServicePrincipalObjectId -RoleId $script:PowerOnOffRoleId
+    if ($null -eq $assigned) { return 'Unknown' }
+    if ($assigned) { return 'Present' }
+    return 'Missing'
 }
 
 function Get-AvdFoundationState {
     # Which foundation pieces are missing; only these are deployed, so existing resources are never re-PUT.
-    param([Parameter(Mandatory)][System.Collections.IDictionary]$Configuration)
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Configuration, [string]$WorkerPrincipalObjectId)
 
     $foundation = $Configuration.foundation
     $resourceGroupName = $Configuration.target.resourceGroupName
     $groupExists = [bool](Get-AzResourceGroup -Name $resourceGroupName -ErrorAction SilentlyContinue)
-    $state = [ordered]@{ ResourceGroup = $false; Network = $false; KeyVault = $false; Secret = $false; Identity = $false; AutoscaleRole = $false }
+    $state = [ordered]@{ ResourceGroup = $false; Network = $false; KeyVault = $false; Secret = $false; Identity = $false; AutoscaleRole = $false; WorkerAccess = $false }
+    if ($WorkerPrincipalObjectId) {
+        $scope = "/subscriptions/$($Configuration.subscriptionId)/resourceGroups/$resourceGroupName"
+        $state.WorkerAccess = -not ($groupExists -and (Test-AvdWorkerAccess -Scope $scope -PrincipalId $WorkerPrincipalObjectId))
+    }
     if ($Configuration.Contains('scaling')) {
         $state.AutoscaleRole = (Test-AvdAutoscaleRole -Configuration $Configuration) -eq 'Missing'
     }
@@ -224,7 +262,7 @@ function Get-AvdFoundationState {
         $state.Identity = -not ($groupExists -and (Get-AzResource -ResourceId $Configuration.execution.deploymentIdentityResourceId -ErrorAction SilentlyContinue))
     }
     $missing = @($state.Keys | Where-Object { $state[$_] })
-    return [pscustomobject]@{ Missing = $missing; ResourceGroup = $state.ResourceGroup; Network = $state.Network; KeyVault = $state.KeyVault; Secret = $state.Secret; Identity = $state.Identity; AutoscaleRole = $state.AutoscaleRole }
+    return [pscustomobject]@{ Missing = $missing; ResourceGroup = $state.ResourceGroup; Network = $state.Network; KeyVault = $state.KeyVault; Secret = $state.Secret; Identity = $state.Identity; AutoscaleRole = $state.AutoscaleRole; WorkerAccess = $state.WorkerAccess }
 }
 
 function Get-AvdFoundationParameters {
@@ -233,7 +271,8 @@ function Get-AvdFoundationParameters {
         [Parameter(Mandatory)]$State,
         [securestring]$AdminPassword,
         [string]$OperatorObjectId = '',
-        [string]$OperatorPrincipalType = 'User'
+        [string]$OperatorPrincipalType = 'User',
+        [string]$WorkerPrincipalObjectId = ''
     )
 
     $foundation = $Configuration.foundation
@@ -262,6 +301,12 @@ function Get-AvdFoundationParameters {
     }
     if ($State.AutoscaleRole) {
         $parameters.autoscaleServicePrincipalId = $Configuration.identity.avdServicePrincipalObjectId
+    }
+    if ($WorkerPrincipalObjectId -and $State.PSObject.Properties['WorkerAccess'] -and $State.WorkerAccess) {
+        $parameters.workerPrincipalId = $WorkerPrincipalObjectId
+        if ($Configuration.network.resourceGroupName -ne $Configuration.target.resourceGroupName) {
+            $parameters.workerNetwork = @{ resourceGroupName = $Configuration.network.resourceGroupName; vnetName = $Configuration.network.virtualNetworkName }
+        }
     }
     return $parameters
 }
@@ -1120,4 +1165,4 @@ function Invoke-AvdDeploy {
     }
 }
 
-Export-ModuleMember -Function Invoke-AvdPreview, Invoke-AvdDeploy, Test-AvdVmCapacity, Get-AvdImageOptions, Get-AvdSessionHostImage, Get-AvdPlatformParameters, Get-AvdSessionHostParameters, Get-AvdFoundationParameters, Get-AvdTemplateHash, New-AvdAdminPassword, Test-AvdNameAvailable, Connect-AvdAzure, Assert-AvdAzureTooling, Get-AvdOperator
+Export-ModuleMember -Function Invoke-AvdPreview, Invoke-AvdDeploy, Test-AvdVmCapacity, Get-AvdImageOptions, Get-AvdSessionHostImage, Get-AvdPlatformParameters, Get-AvdSessionHostParameters, Get-AvdFoundationParameters, Get-AvdFoundationState, Get-AvdProviderState, Get-AvdTemplateHash, New-AvdAdminPassword, Test-AvdNameAvailable, Connect-AvdAzure, Assert-AvdAzureTooling, Get-AvdOperator

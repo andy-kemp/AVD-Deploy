@@ -1,10 +1,12 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import { armScope, groupReadScope } from './authConfig';
+import { useMsal } from '@azure/msal-react';
+import { armScope, groupReadScope, groupWriteScope, storageScope } from './authConfig';
+import { grantWorkerReader, putJobBlob, startWorker, workerCanRead, workerConfigured, type RunRecord } from './worker';
 import {
   getComputeCapacityData, getResourceGroupLocation, listHostPoolRegions, listSubscriptions, listVirtualNetworks,
   type ComputeSku, type Region, type Subscription, type Usage, type VirtualNetwork,
 } from './arm';
-import { searchGroups, type Group } from './graph';
+import { ensureSecurityGroup, searchGroups, type Group } from './graph';
 import {
   cidrRange, dayTimes, evaluateCapacity, imageOptions, overlappingPrefixes, personas, proposeAddressSpace, recommend,
   suggestedTimeZone, timeZones, type CapacityResult, type Hosting, type PersonaId,
@@ -20,7 +22,11 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export function Wizard() {
   const getToken = useAccessToken();
+  const { instance } = useMsal();
   const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState<string | null>(null);
+  // Whether the worker can read the chosen subscription: null while checking or when there is no worker.
+  const [workerAccess, setWorkerAccess] = useState<{ subscriptionId: string; ok: boolean; error?: string } | null>(null);
 
   // 1. Azure location
   const [subscriptions, setSubscriptions] = useState<Subscription[] | null>(null);
@@ -140,6 +146,34 @@ export function Wizard() {
     return () => { cancelled = true; };
   }, [subscriptionId, getToken]);
 
+  // The worker needs Reader on the target subscription before it can generate and preview.
+  useEffect(() => {
+    setWorkerAccess(null);
+    if (!workerConfigured || !subscriptionId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const ok = await workerCanRead(await getToken(armScope), subscriptionId);
+        if (!cancelled) setWorkerAccess({ subscriptionId, ok });
+      } catch (e) {
+        if (!cancelled) setWorkerAccess({ subscriptionId, ok: false, error: message(e) });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [subscriptionId, getToken]);
+
+  async function allowWorker() {
+    setSubmitting('Giving the portal worker Reader on this subscription…');
+    try {
+      await grantWorkerReader(await getToken(armScope, true), subscriptionId);
+      setWorkerAccess({ subscriptionId, ok: true });
+    } catch (e) {
+      setWorkerAccess({ subscriptionId, ok: false, error: message(e) });
+    } finally {
+      setSubmitting(null);
+    }
+  }
+
   // Resource group: exists, and in which region.
   useEffect(() => {
     setRgStatus(null);
@@ -242,6 +276,44 @@ export function Wizard() {
     return { answers, errors };
   }
 
+  // Creates any new groups as the operator (the worker has no Graph rights), saves the answers and starts Preview.
+  async function onRunPreview() {
+    const { answers, errors } = collect();
+    setValidation(errors);
+    if (errors.length) return;
+    const account = instance.getActiveAccount();
+    const oid = (account?.idTokenClaims?.oid as string | undefined) ?? account?.localAccountId;
+    try {
+      if (!oid) throw new Error('Could not read your Entra object ID; sign out and in again.');
+      for (const [role, key] of [['users', 'Users'], ['admins', 'Admins']] as const) {
+        const name = answers[`New${key}Group`];
+        if (!name) continue;
+        setSubmitting(`Creating or finding the ${role} group '${name}'…`);
+        const group = await ensureSecurityGroup(await getToken(groupWriteScope, true), name, role, oid, role === 'users' && !!answers.AddMeToUsersGroup);
+        answers[`${key}Group`] = group.id;
+        delete answers[`New${key}Group`];
+      }
+      delete answers.AddMeToUsersGroup;
+      setSubmitting('Saving the answers…');
+      const jobId = crypto.randomUUID();
+      const storageToken = await getToken(storageScope, true);
+      const record: RunRecord = {
+        jobId, createdUtc: new Date().toISOString(), createdBy: account?.username ?? '', subscriptionId: answers.SubscriptionId,
+        resourceGroup: answers.ResourceGroupName, prefix: answers.Prefix, executions: [],
+      };
+      await putJobBlob(storageToken, `${jobId}/answers.json`, JSON.stringify(answers, null, 2));
+      setSubmitting('Starting Preview in Azure…');
+      const name = await startWorker(await getToken(armScope, true), { JOB_ID: jobId, JOB_ACTION: 'preview' });
+      record.executions.push({ action: 'preview', name, startedUtc: new Date().toISOString() });
+      await putJobBlob(storageToken, `${jobId}/run.json`, JSON.stringify(record, null, 2));
+      window.location.hash = `#/runs/${jobId}`;
+    } catch (e) {
+      setValidation([message(e)]);
+    } finally {
+      setSubmitting(null);
+    }
+  }
+
   function onDownload() {
     const { answers, errors } = collect();
     setValidation(errors);
@@ -264,6 +336,12 @@ export function Wizard() {
             <select value={subscriptionId} onChange={(e) => setSubscriptionId(e.target.value)}>
               {subscriptions.map((s) => <option key={s.subscriptionId} value={s.subscriptionId}>{s.displayName} ({s.subscriptionId})</option>)}
             </select>
+            {workerAccess && !workerAccess.ok && (
+              <div className="note warn">
+                {workerAccess.error ? `Could not check the portal worker's access: ${workerAccess.error}` : 'The portal worker cannot read this subscription yet. It needs Reader to build the configuration and run Preview; write access is granted per resource group when you prepare a deployment.'}
+                <div><button className="secondary" disabled={!!submitting} onClick={allowWorker}>Give the worker Reader (as me)</button></div>
+              </div>
+            )}
           </Field>
           <Field label="Region" hint="Regions that support AVD host pools.">
             <select value={location} onChange={(e) => setLocation(e.target.value)} disabled={!regions}>
@@ -422,9 +500,17 @@ export function Wizard() {
       </Section>
 
       <Section n={hosting === 'Shared' ? 8 : 7} title="Create configuration">
-        <p className="hint">The portal saves your answers as a file. <code>avd.ps1</code> turns them into a validated configuration, creating any new groups and checking resource names as you, then you run Preview and Deploy.</p>
+        {workerConfigured ? (
+          <p className="hint">Run Preview in Azure creates any new groups as you, then the portal worker builds the configuration and previews it. You review the plan, prepare the foundation with your own rights if needed, and approve the deployment.</p>
+        ) : (
+          <p className="hint">The portal saves your answers as a file. <code>avd.ps1</code> turns them into a validated configuration, creating any new groups and checking resource names as you, then you run Preview and Deploy.</p>
+        )}
         {validation.length > 0 && <div className="note err"><ul>{validation.map((v) => <li key={v}>{v}</li>)}</ul></div>}
-        <div className="actions"><button onClick={onDownload}>Download answers</button></div>
+        {submitting && <div className="note">{submitting}</div>}
+        <div className="actions">
+          {workerConfigured && <button disabled={!!submitting || !(workerAccess?.subscriptionId === subscriptionId && workerAccess.ok)} title={workerAccess?.ok ? undefined : 'The portal worker needs Reader on this subscription first.'} onClick={onRunPreview}>Run Preview in Azure</button>}
+          <button className={workerConfigured ? 'secondary' : undefined} onClick={onDownload}>Download answers</button>
+        </div>
         {downloaded && (
           <div style={{ marginTop: 12 }}>
             <div className="note ok">Saved {downloaded.fileName} to your downloads. Move it into your AVD-Deploy folder, then run:</div>
