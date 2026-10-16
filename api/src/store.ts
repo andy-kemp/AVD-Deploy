@@ -64,6 +64,19 @@ export interface AccountLink {
   linkedAt: string;
 }
 
+/** A subscription and resource group whose Owner granted AKC AVD Deploy its rights (Onboard subscription). */
+export interface OnboardingRecord {
+  orgId: string;
+  tenantId: string;
+  subscriptionId: string;
+  resourceGroup: string;
+  location: string;
+  scaling: boolean;
+  onboardedBy: string;
+  onboardedByUsername: string;
+  onboardedAt: string;
+}
+
 export interface Store {
   getOrganisation(orgId: string): Promise<OrganisationRecord | null>;
   /** Fails with 409 if a record already exists. */
@@ -82,6 +95,8 @@ export interface Store {
   getAccountLink(orgId: string, userId: string): Promise<AccountLink | null>;
   putAccountLink(record: AccountLink): Promise<void>;
   deleteAccountLink(orgId: string, userId: string): Promise<void>;
+  putOnboarding(record: OnboardingRecord): Promise<void>;
+  listOnboardings(orgId: string): Promise<OnboardingRecord[]>;
 }
 
 const tenantTaken = () => new HttpError(409, 'tenant-taken', 'This Microsoft tenant is already connected to another organisation. Contact hello@andykemp.com.');
@@ -163,12 +178,23 @@ export class MemoryStore implements Store {
   async deleteAccountLink(orgId: string, userId: string) {
     this.links.delete(`${orgId}/${userId}`);
   }
+
+  private onboardings = new Map<string, OnboardingRecord>();
+
+  async putOnboarding(record: OnboardingRecord) {
+    this.onboardings.set(`${record.orgId}/${record.subscriptionId}|${record.resourceGroup.toLowerCase()}`, { ...record });
+  }
+
+  async listOnboardings(orgId: string) {
+    return [...this.onboardings.values()].filter((o) => o.orgId === orgId).map((o) => ({ ...o }));
+  }
 }
 
 // Organisations: PartitionKey = Clerk org ID, RowKey = 'organisation'. Member roles: PartitionKey = org ID, RowKey = user ID.
 // Connect states: PartitionKey = state, RowKey = 'state'. Tenant connections: PartitionKey = org ID, RowKey = 'tenant'.
 // Tenant owners: PartitionKey = Entra tenant ID, RowKey = 'owner' (one organisation per tenant).
 // Account links: PartitionKey = org ID, RowKey = user ID.
+// Onboardings: PartitionKey = org ID, RowKey = '<subscription ID>|<resource group, lower case>'.
 export class TableStore implements Store {
   private organisations: TableClient;
   private memberRoles: TableClient;
@@ -176,6 +202,7 @@ export class TableStore implements Store {
   private tenantConnections: TableClient;
   private tenantOwners: TableClient;
   private accountLinks: TableClient;
+  private onboardings: TableClient;
 
   private constructor(client: (table: string) => TableClient) {
     this.organisations = client('organisations');
@@ -184,6 +211,7 @@ export class TableStore implements Store {
     this.tenantConnections = client('tenantconnections');
     this.tenantOwners = client('tenantowners');
     this.accountLinks = client('accountlinks');
+    this.onboardings = client('onboardings');
   }
 
   static async create(storage: Exclude<Config['storage'], { kind: 'memory' }>): Promise<TableStore> {
@@ -192,7 +220,7 @@ export class TableStore implements Store {
         ? TableClient.fromConnectionString(storage.connectionString, table, { allowInsecureConnection: storage.connectionString.includes('127.0.0.1') })
         : new TableClient(`https://${storage.accountName}.table.core.windows.net`, table, new DefaultAzureCredential());
     const store = new TableStore(client);
-    for (const table of [store.organisations, store.memberRoles, store.connectStates, store.tenantConnections, store.tenantOwners, store.accountLinks]) {
+    for (const table of [store.organisations, store.memberRoles, store.connectStates, store.tenantConnections, store.tenantOwners, store.accountLinks, store.onboardings]) {
       try {
         await table.createTable();
       } catch (e) {
@@ -361,5 +389,18 @@ export class TableStore implements Store {
     } catch (e) {
       if (!(e instanceof RestError && e.statusCode === 404)) throw e;
     }
+  }
+
+  async putOnboarding(record: OnboardingRecord) {
+    const { orgId, ...rest } = record;
+    await this.onboardings.upsertEntity({ partitionKey: orgId, rowKey: `${record.subscriptionId}|${record.resourceGroup.toLowerCase()}`, ...rest }, 'Replace');
+  }
+
+  async listOnboardings(orgId: string) {
+    const records: OnboardingRecord[] = [];
+    for await (const e of this.onboardings.listEntities<Omit<OnboardingRecord, 'orgId'>>({ queryOptions: { filter: `PartitionKey eq '${orgId.replace(/'/g, "''")}'` } })) {
+      records.push({ orgId, tenantId: e.tenantId, subscriptionId: e.subscriptionId, resourceGroup: e.resourceGroup, location: e.location, scaling: Boolean(e.scaling), onboardedBy: e.onboardedBy, onboardedByUsername: e.onboardedByUsername, onboardedAt: e.onboardedAt });
+    }
+    return records;
   }
 }

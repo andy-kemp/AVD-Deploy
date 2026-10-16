@@ -68,3 +68,92 @@ export const arm: Arm = {
     return [...regions.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
   },
 };
+
+// Onboard subscription (ADR 0019): the operator's own token, so Azure enforces that they are an Owner.
+
+export interface RoleAssignment {
+  name: string;
+  scope: string;
+  roleId: string;
+  condition: string;
+}
+
+async function call(token: string, method: string, path: string, body?: unknown): Promise<{ status: number; json: Record<string, unknown> }> {
+  const response = await fetch(`${armBase}${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${token}`, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const json = ((await response.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
+  return { status: response.status, json };
+}
+
+function fail(result: { status: number; json: Record<string, unknown> }): never {
+  const error = result.json.error as { code?: string; message?: string } | undefined;
+  const text = error?.code === 'AuthorizationFailed'
+    ? 'Your account is not allowed to do this. Onboarding needs Owner (or User Access Administrator and Contributor) on the subscription.'
+    : (error?.message ?? `Azure returned HTTP ${result.status}.`);
+  throw new ArmError(result.status, text);
+}
+
+export interface OnboardingArm {
+  providerState(token: string, subscriptionId: string, namespace: string): Promise<string>;
+  registerProvider(token: string, subscriptionId: string, namespace: string): Promise<void>;
+  resourceGroupLocation(token: string, subscriptionId: string, name: string): Promise<string | null>;
+  createResourceGroup(token: string, subscriptionId: string, name: string, location: string): Promise<void>;
+  roleAssignments(token: string, scope: string, principalId: string): Promise<RoleAssignment[]>;
+  assignRole(token: string, scope: string, assignment: { name: string; roleId: string; principalId: string; principalType: 'ServicePrincipal'; description: string; condition?: string }): Promise<void>;
+}
+
+export const onboardingArm: OnboardingArm = {
+  async providerState(token, subscriptionId, namespace) {
+    const result = await call(token, 'GET', `/subscriptions/${subscriptionId}/providers/${namespace}?api-version=2021-04-01`);
+    if (result.status !== 200) fail(result);
+    return String(result.json.registrationState ?? 'NotRegistered');
+  },
+
+  async registerProvider(token, subscriptionId, namespace) {
+    const result = await call(token, 'POST', `/subscriptions/${subscriptionId}/providers/${namespace}/register?api-version=2021-04-01`);
+    if (result.status >= 300) fail(result);
+  },
+
+  async resourceGroupLocation(token, subscriptionId, name) {
+    const result = await call(token, 'GET', `/subscriptions/${subscriptionId}/resourcegroups/${encodeURIComponent(name)}?api-version=2021-04-01`);
+    if (result.status === 404) return null;
+    if (result.status !== 200) fail(result);
+    return String(result.json.location);
+  },
+
+  async createResourceGroup(token, subscriptionId, name, location) {
+    const result = await call(token, 'PUT', `/subscriptions/${subscriptionId}/resourcegroups/${encodeURIComponent(name)}?api-version=2021-04-01`, {
+      location,
+      tags: { 'managed-by': 'AVD Deploy (Andy Kemp Consulting)' },
+    });
+    if (result.status >= 300) fail(result);
+  },
+
+  async roleAssignments(token, scope, principalId) {
+    const filter = encodeURIComponent(`principalId eq '${principalId}'`);
+    const result = await call(token, 'GET', `${scope}/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01&$filter=${filter}`);
+    if (result.status !== 200) fail(result);
+    const value = (result.json.value ?? []) as { name: string; properties: { scope: string; roleDefinitionId: string; condition?: string } }[];
+    return value
+      .filter((a) => a.properties.scope.toLowerCase() === scope.toLowerCase())
+      .map((a) => ({ name: a.name, scope: a.properties.scope, roleId: a.properties.roleDefinitionId.split('/').pop()!.toLowerCase(), condition: a.properties.condition ?? '' }));
+  },
+
+  async assignRole(token, scope, assignment) {
+    const subscription = /^\/subscriptions\/([^/]+)/i.exec(scope)?.[1];
+    const result = await call(token, 'PUT', `${scope}/providers/Microsoft.Authorization/roleAssignments/${assignment.name}?api-version=2022-04-01`, {
+      properties: {
+        roleDefinitionId: `/subscriptions/${subscription}/providers/Microsoft.Authorization/roleDefinitions/${assignment.roleId}`,
+        principalId: assignment.principalId,
+        principalType: assignment.principalType,
+        description: assignment.description,
+        ...(assignment.condition ? { condition: assignment.condition, conditionVersion: '2.0' } : {}),
+      },
+    });
+    // A new service principal can take a moment to replicate; the caller retries on the next check.
+    if (result.status >= 300) fail(result);
+  },
+};

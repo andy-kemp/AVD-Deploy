@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ApiError, message, useApi, type AvdOrganisation, type Region, type Subscription } from '../api';
 import { Hero } from '../Chrome';
+import { Onboard } from './Onboard';
 
 const roleNames: Record<string, string> = { reader: 'Reader', operator: 'Operator', approver: 'Approver', admin: 'Admin' };
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '');
@@ -75,8 +76,9 @@ export function Welcome({ organisation, onChanged }: { organisation: AvdOrganisa
       </section>
       {tenant && <LinkAccount organisation={organisation} onChanged={onChanged} />}
       {tenant && organisation.link && <Subscriptions onRelink={onChanged} />}
+      {tenant && organisation.link && <Onboard step={4} canOnboard={isAdmin} onRelink={onChanged} />}
       <section className="card">
-        <h2><span className="step">{tenant && organisation.link ? 4 : tenant ? 3 : 2}</span>Invite your team</h2>
+        <h2><span className="step">{tenant && organisation.link ? 5 : tenant ? 3 : 2}</span>Invite your team</h2>
         <p>Give colleagues Reader, Operator, Approver or Admin access.</p>
         <div className="actions"><button className="btn btn-secondary" disabled>Invite colleagues</button><span className="muted">Coming soon</span></div>
       </section>

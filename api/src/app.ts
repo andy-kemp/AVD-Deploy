@@ -1,7 +1,9 @@
 // HTTP routes for Get started, organisation approval and Connect tenant (docs/hosted-service.md).
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { HttpError, type Principal, type Verifier } from './auth.ts';
-import { arm as defaultArm, ArmError, type Arm } from './arm.ts';
+import { arm as defaultArm, ArmError, onboardingArm as defaultOnboardingArm, type Arm, type OnboardingArm } from './arm.ts';
+import { graph as defaultGraph, type Graph } from './graph.ts';
+import { applyOnboarding, checkOnboarding, type OnboardingContext, type OnboardingRequest } from './onboarding.ts';
 import { codeChallenge, consentAdminRoles, EntraError, randomToken, RelinkNeededError, type Entra } from './entra.ts';
 import type { Sealer } from './sealer.ts';
 import { permissionsFor, type AvdPermission } from './roles.ts';
@@ -16,6 +18,8 @@ export interface AppOptions {
   /** Seals operators' refresh tokens; required for Link account. */
   sealer?: Sealer;
   arm?: Arm;
+  onboardingArm?: OnboardingArm;
+  graph?: Graph;
   now?: () => Date;
 }
 
@@ -305,6 +309,89 @@ export function createApp(options: AppOptions) {
     }
   }
 
+  const onboardingArm = options.onboardingArm ?? defaultOnboardingArm;
+  const graphApi = options.graph ?? defaultGraph;
+  const appObjectIds = new Map<string, string>();
+
+  function onboardingRequest(body: Record<string, unknown>): OnboardingRequest {
+    const subscriptionId = typeof body.subscriptionId === 'string' ? body.subscriptionId.toLowerCase() : '';
+    const resourceGroup = typeof body.resourceGroup === 'string' ? body.resourceGroup.trim() : '';
+    const location = typeof body.location === 'string' ? body.location.trim().toLowerCase() : '';
+    if (!guidPattern.test(subscriptionId)) throw new HttpError(400, 'invalid-subscription', 'Choose a subscription.');
+    if (!/^[A-Za-z0-9._()-]{1,90}$/.test(resourceGroup) || resourceGroup.endsWith('.')) throw new HttpError(400, 'invalid-resource-group', 'Resource group names are 1-90 letters, digits and . _ - ( ), not ending in a full stop.');
+    if (!/^[a-z0-9]{2,40}$/.test(location)) throw new HttpError(400, 'invalid-location', 'Choose a region.');
+    return { subscriptionId, resourceGroup, location, scaling: body.scaling !== false };
+  }
+
+  async function onboardingContext(principal: Principal, request: OnboardingRequest): Promise<{ orgId: string; context: OnboardingContext; link: AccountLink; tenant: TenantConnection }> {
+    const entra = requireEntra();
+    const sealer = requireSealer();
+    const { orgId } = await requirePermission(principal, 'admin');
+    const tenant = await requireTenant(orgId);
+    if (!(await mySubscriptions(principal)).some((s) => s.id.toLowerCase() === request.subscriptionId)) {
+      throw new HttpError(404, 'subscription-not-found', 'That subscription is not one you can see in the connected tenant.');
+    }
+    const { token, link } = await operatorArmToken(principal);
+    try {
+      if (!(await arm.listHostPoolRegions(token, request.subscriptionId)).some((r) => r.name === request.location)) {
+        throw new HttpError(400, 'invalid-location', 'Azure Virtual Desktop is not offered in that region.');
+      }
+    } catch (e) {
+      armFailure(e);
+    }
+    let appObjectId = appObjectIds.get(tenant.tenantId);
+    if (!appObjectId) {
+      try {
+        appObjectId = await entra.appObjectId(tenant.tenantId);
+      } catch (e) {
+        throw new HttpError(409, 'app-not-consented', e instanceof EntraError ? e.message : 'AKC AVD Deploy is not approved in this tenant. Connect the tenant again.');
+      }
+      appObjectIds.set(tenant.tenantId, appObjectId);
+    }
+    let avdObjectId: string | null = null;
+    if (request.scaling) {
+      try {
+        avdObjectId = await graphApi.avdServicePrincipalId(await entra.graphToken(tenant.tenantId, await sealer.open(link.sealedRefreshToken)));
+      } catch (e) {
+        if (e instanceof RelinkNeededError) throw new HttpError(409, 'relink-needed', 'Microsoft needs you to sign in again. Link your account again.');
+        throw new HttpError(502, 'graph-error', e instanceof Error ? e.message : 'Could not look up the Azure Virtual Desktop service.');
+      }
+    }
+    return { orgId, link, tenant, context: { token, arm: onboardingArm, appObjectId, avdObjectId } };
+  }
+
+  async function onboard(principal: Principal, body: Record<string, unknown>, apply: boolean) {
+    const request = onboardingRequest(body);
+    const { orgId, context, link, tenant } = await onboardingContext(principal, request);
+    try {
+      let actions = await checkOnboarding(request, context);
+      if (apply) {
+        await applyOnboarding(request, context, actions);
+        actions = await checkOnboarding(request, context);
+      }
+      const ready = actions.every((a) => a.status === 'done');
+      if (ready) {
+        await options.store.putOnboarding({
+          orgId, tenantId: tenant.tenantId, subscriptionId: request.subscriptionId, resourceGroup: request.resourceGroup, location: request.location,
+          scaling: request.scaling, onboardedBy: principal.userId, onboardedByUsername: link.username, onboardedAt: now().toISOString(),
+        });
+      }
+      return { actions, ready };
+    } catch (e) {
+      armFailure(e);
+    }
+  }
+
+  async function listOnboardings(principal: Principal) {
+    const { orgId } = await requirePermission(principal, 'read');
+    const records = await options.store.listOnboardings(orgId);
+    return {
+      onboardings: records
+        .sort((a, b) => b.onboardedAt.localeCompare(a.onboardedAt))
+        .map((o) => ({ subscriptionId: o.subscriptionId, resourceGroup: o.resourceGroup, location: o.location, scaling: o.scaling, onboardedBy: o.onboardedByUsername, onboardedAt: o.onboardedAt })),
+    };
+  }
+
   async function me(principal: Principal) {
     if (!principal.orgId) return { userId: principal.userId, isAkcAdmin: isAkcAdmin(principal), organisation: null };
     const record = await options.store.getOrganisation(principal.orgId);
@@ -383,6 +470,9 @@ export function createApp(options: AppOptions) {
       if (route === 'DELETE /api/accounts/link') return send(res, 200, await unlink(principal));
       if (route === 'GET /api/discovery/subscriptions') return send(res, 200, { subscriptions: await mySubscriptions(principal) });
       if (route === 'GET /api/discovery/regions') return send(res, 200, await regions(principal, url.searchParams.get('subscriptionId')));
+      if (route === 'POST /api/onboarding/check') return send(res, 200, await onboard(principal, await readJson(req), false));
+      if (route === 'POST /api/onboarding/apply') return send(res, 200, await onboard(principal, await readJson(req), true));
+      if (route === 'GET /api/onboarding') return send(res, 200, await listOnboardings(principal));
       const decision = /^POST \/api\/admin\/organisations\/([^/]+)\/(approve|decline)$/.exec(route);
       if (decision) {
         if (!orgIdPattern.test(decision[1])) throw new HttpError(400, 'invalid-organisation', 'Not a Clerk organisation ID.');

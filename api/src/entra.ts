@@ -50,6 +50,10 @@ export interface Entra {
   linkSignInUrl(tenantId: string, state: string, nonce: string, codeChallenge: string): string;
   redeemLink(tenantId: string, code: string, codeVerifier: string, nonce: string): Promise<LinkedSignIn>;
   armToken(tenantId: string, refreshToken: string): Promise<ArmToken>;
+  /** A delegated Graph token from the operator's link, for the read-only Graph scopes consented at Connect tenant. */
+  graphToken(tenantId: string, refreshToken: string): Promise<string>;
+  /** Object ID of the AKC AVD Deploy service principal in a consented tenant (the oid of an app-only token). */
+  appObjectId(tenantId: string): Promise<string>;
   adminConsentUrl(state: string): string;
   verifySignInUrl(tenantId: string, state: string, nonce: string, codeChallenge: string): string;
   /** Redeems the proof sign-in and returns its verified claims and the tenant's display name. */
@@ -155,6 +159,23 @@ export function createEntra(options: { clientId: string; portalOrigin: string; m
         throw new EntraError(firstLine(data.error_description, 'Microsoft did not issue an Azure token.'));
       }
       return { accessToken: data.access_token, expiresAt: Date.now() + Number(data.expires_in ?? 3600) * 1000, ...(data.refresh_token ? { refreshToken: data.refresh_token } : {}) };
+    },
+
+    async graphToken(tenantId, refreshToken) {
+      const { ok, data } = await tokenRequest(tenantId, { grant_type: 'refresh_token', refresh_token: refreshToken, scope: 'https://graph.microsoft.com/Application.Read.All' });
+      if (!ok || !data.access_token) {
+        if (['invalid_grant', 'interaction_required', 'consent_required'].includes(data.error)) throw new RelinkNeededError(firstLine(data.error_description, 'Sign in again.'));
+        throw new EntraError(firstLine(data.error_description, 'Microsoft did not issue a Graph token.'));
+      }
+      return data.access_token;
+    },
+
+    async appObjectId(tenantId) {
+      const { ok, data } = await tokenRequest(tenantId, { grant_type: 'client_credentials', scope: 'https://management.azure.com/.default' });
+      if (!ok || !data.access_token) throw new EntraError(firstLine(data.error_description, 'The AKC AVD Deploy app is not approved in this tenant.'));
+      const claims = JSON.parse(Buffer.from(data.access_token.split('.')[1] ?? '', 'base64url').toString('utf8') || '{}') as { oid?: string; tid?: string };
+      if (!claims.oid || claims.tid?.toLowerCase() !== tenantId.toLowerCase()) throw new EntraError('Could not identify the AKC AVD Deploy app in this tenant.');
+      return claims.oid;
     },
 
     adminConsentUrl(state) {

@@ -46,6 +46,8 @@ const entra: Entra = {
     if (fake.refreshFails) throw new RelinkNeededError('AADSTS700082: The refresh token has expired.');
     return { accessToken: `at-${fake.refreshCalls + 1}`, expiresAt: Date.now() + 3600_000, refreshToken: `rt-${fake.refreshCalls + 1}` };
   },
+  graphToken: async () => 'graph-token',
+  appObjectId: async () => 'app-oid',
 };
 const arm: Arm = {
   listSubscriptions: async (token) => {

@@ -44,6 +44,8 @@ const entra: Entra = {
   linkSignInUrl: () => 'https://login.example/link',
   redeemLink: async () => { throw new Error('not used'); },
   armToken: async () => { throw new Error('not used'); },
+  graphToken: async () => { throw new Error('not used'); },
+  appObjectId: async () => { throw new Error('not used'); },
 };
 
 before(async () => {
