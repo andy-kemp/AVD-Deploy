@@ -1,141 +1,139 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#ffffff">
 <title>AVD Deploy - sign-in check</title>
 <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
-<script>
-  // Same theme switch as www.andykemp.com: light unless the visitor chose dark (stored per site).
-  try {
-    if (localStorage.getItem('akc-theme') === 'dark') {
-      document.documentElement.dataset.theme = 'dark';
-      document.querySelector('meta[name="theme-color"]').setAttribute('content', '#090909');
-    }
-  } catch (e) { /* storage unavailable: stay light */ }
-</script>
+<link rel="icon" href="/assets/favicon.ico" sizes="any">
 <style>
-  /* Design tokens from coppersite (www.andykemp.com) src/styles/global.css. */
+  /* Same chrome as AKC Tenant Audit (AKC-Audit src/components/site-chrome.tsx and sign-in page), which follows
+     the light theme of www.andykemp.com (coppersite src/styles/global.css). */
   :root {
-    --colour-bg: #090909; --colour-bg-soft: #11100f; --colour-panel: #171310; --colour-panel-raised: #1d1713;
-    --colour-header-bg: rgba(9, 9, 9, 0.95);
-    --colour-copper: #bd7448; --colour-copper-light: #e0a070; --colour-copper-dark: #7e4329; --colour-copper-strong: #a35c35;
-    --colour-on-copper: #ffffff;
-    --colour-white: #f7f4f1; --colour-text: #d8d1cb; --colour-muted: #aaa19a;
-    --colour-border: rgba(193, 116, 71, 0.30); --colour-border-strong: rgba(213, 145, 94, 0.55);
-    --colour-focus: #f2b37d;
-    --colour-success: #7fbf63; --colour-danger: #f87171;
+    --colour-bg: #ffffff; --colour-bg-soft: #f7f3ef; --colour-panel: #ffffff; --colour-panel-raised: #f4ede6;
+    --colour-copper: #8a4e2e; --colour-copper-light: #75401f; --colour-copper-dark: #60351f;
+    --colour-heading: #201a16; --colour-text: #302923; --colour-muted: #625850;
+    --colour-border: rgba(117, 64, 31, 0.22); --colour-focus: #75401f;
+    --colour-success: #42683a; --colour-danger: #b42318;
     --font-sans: Inter, Aptos, "Segoe UI", system-ui, -apple-system, sans-serif;
     --font-mono: "Cascadia Mono", Consolas, "Courier New", monospace;
-    --radius-sm: 4px; --radius-md: 8px; --radius-lg: 12px;
-  }
-  html[data-theme='light'] {
-    --colour-bg: #ffffff; --colour-bg-soft: #f7f3ef; --colour-panel: #ffffff; --colour-panel-raised: #f4ede6;
-    --colour-header-bg: rgba(255, 255, 255, 0.96);
-    --colour-copper: #8a4e2e; --colour-copper-light: #75401f; --colour-copper-dark: #60351f; --colour-copper-strong: #8a4e2e;
-    --colour-white: #201a16; --colour-text: #302923; --colour-muted: #625850;
-    --colour-border: rgba(117, 64, 31, 0.22); --colour-border-strong: rgba(117, 64, 31, 0.42);
-    --colour-focus: #75401f;
-    --colour-success: #42683a; --colour-danger: #b42318;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html { font-size: 16px; -webkit-font-smoothing: antialiased; }
-  body { margin: 0; font-family: var(--font-sans); line-height: 1.6; background: var(--colour-bg-soft); color: var(--colour-text); }
-  ::selection { background: var(--colour-copper); color: var(--colour-on-copper); }
+  body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; font-family: var(--font-sans); line-height: 1.6; background: var(--colour-bg); color: var(--colour-text); }
+  ::selection { background: var(--colour-copper); color: #fff; }
   a { color: var(--colour-copper-light); text-decoration: none; }
   a:hover { color: var(--colour-copper); }
   :focus-visible { outline: 2px solid var(--colour-focus); outline-offset: 2px; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 0 16px; }
+  @media (min-width: 640px) { .wrap { padding: 0 24px; } }
 
-  .site-header { position: sticky; top: 0; z-index: 10; background: var(--colour-header-bg); backdrop-filter: blur(10px); border-bottom: 1px solid var(--colour-border); padding: 0.875rem 0; }
-  .header-inner { max-width: 1440px; margin: 0 auto; padding: 0 clamp(1rem, 4vw, 4rem); display: flex; align-items: center; gap: 1rem; }
-  .brand { display: flex; align-items: center; gap: 1rem; color: var(--colour-white); }
-  .logo { height: 56px; width: auto; display: block; }
-  .logo--dark { display: none; }
-  html[data-theme='dark'] .logo--light { display: none; }
-  html[data-theme='dark'] .logo--dark { display: block; }
-  .product { font-weight: 700; font-size: 1.125rem; padding-left: 1rem; border-left: 1px solid var(--colour-border-strong); }
-  .header-actions { margin-left: auto; display: flex; align-items: center; gap: 0.75rem; }
-  .theme-toggle { width: 38px; height: 38px; border-radius: var(--radius-md); border: 1px solid var(--colour-border-strong); background: transparent; color: var(--colour-text); cursor: pointer; font-size: 1rem; }
-  .theme-toggle:hover { border-color: var(--colour-copper); color: var(--colour-copper); }
+  .site-header { position: sticky; top: 0; z-index: 50; background: rgba(255, 255, 255, 0.96); backdrop-filter: blur(10px); border-bottom: 1px solid var(--colour-border); }
+  .site-header .wrap { padding-top: 12px; padding-bottom: 12px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .logo { height: 44px; width: auto; display: block; }
+  .subtitle { display: none; border-left: 1px solid var(--colour-border); padding-left: 12px; font-size: 0.875rem; font-weight: 600; white-space: nowrap; color: var(--colour-muted); }
+  @media (min-width: 640px) { .logo { height: 56px; } .subtitle { display: inline; } }
 
-  main { max-width: 960px; margin: 2rem auto 4rem; padding: 0 clamp(1rem, 4vw, 2rem); }
+  main { flex: 1; }
+  /* Signed out: the whole page is the sign-in, as on the audit tool. */
+  .sign-in-page { min-height: calc(100vh - 81px); display: flex; align-items: center; justify-content: center; background: var(--colour-panel-raised); padding: 2rem 16px; }
+  .checks-page { background: var(--colour-bg-soft); padding: 2rem 0 4rem; }
   .eyebrow { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--colour-copper); margin: 0 0 0.5rem; }
-  h1 { color: var(--colour-white); font-size: clamp(1.75rem, 3.5vw, 2.5rem); line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 0.5rem; }
-  h2 { color: var(--colour-white); font-size: 1.25rem; line-height: 1.2; margin: 0 0 1rem; }
+  h1 { color: var(--colour-heading); font-size: clamp(1.75rem, 3.5vw, 2.5rem); line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 0.5rem; }
+  h2 { color: var(--colour-heading); font-size: 1.25rem; line-height: 1.2; margin: 0 0 1rem; }
   .lead { color: var(--colour-muted); margin: 0 0 2rem; }
-  .card { background: var(--colour-panel); border: 1px solid var(--colour-border); border-radius: var(--radius-lg); padding: 1.5rem 2rem; margin-bottom: 1.5rem; }
+  .card { background: var(--colour-panel); border: 1px solid var(--colour-border); border-radius: 12px; padding: 1.5rem 2rem; margin-bottom: 1.5rem; }
   .card p { color: var(--colour-muted); margin: 0 0 1rem; }
-
   table { width: 100%; border-collapse: collapse; font-size: 0.9375rem; }
   td { padding: 0.75rem 0.25rem; border-top: 1px solid var(--colour-border); vertical-align: top; word-break: break-word; }
   td:first-child { color: var(--colour-muted); width: 36%; }
   .pill { display: inline-block; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; padding: 0.15rem 0.6rem; border-radius: 999px; margin-right: 0.5rem; border: 1px solid; }
   .pill.ok { color: var(--colour-success); border-color: var(--colour-success); }
   .pill.bad { color: var(--colour-danger); border-color: var(--colour-danger); }
-  pre { background: var(--colour-panel-raised); border: 1px solid var(--colour-border); border-radius: var(--radius-md); padding: 1rem; overflow-x: auto; font-family: var(--font-mono); font-size: 0.8125rem; margin: 0; color: var(--colour-text); }
+  pre { background: var(--colour-panel-raised); border: 1px solid var(--colour-border); border-radius: 8px; padding: 1rem; overflow-x: auto; font-family: var(--font-mono); font-size: 0.8125rem; margin: 0; color: var(--colour-text); }
   #org-switcher { margin-top: 1rem; }
-  @media (max-width: 640px) { .product { display: none; } .logo { height: 44px; } .card { padding: 1.25rem; } td:first-child { width: 42%; } }
+  @media (max-width: 640px) { .card { padding: 1.25rem; } td:first-child { width: 42%; } }
+
+  .site-footer { border-top: 1px solid var(--colour-border); background: var(--colour-bg-soft); color: var(--colour-muted); font-size: 0.875rem; }
+  .footer-grid { padding-top: 40px; padding-bottom: 40px; display: grid; gap: 32px; }
+  @media (min-width: 640px) { .footer-grid { grid-template-columns: 2fr 1fr 1fr; } }
+  .footer-grid h2 { font-size: 0.875rem; font-weight: 700; margin: 0 0 12px; color: var(--colour-heading); }
+  .footer-grid ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  .footer-grid a { color: inherit; }
+  .footer-grid a:hover { color: var(--colour-copper); }
+  .footer-grid p { margin: 12px 0 0; line-height: 1.6; max-width: 24rem; }
+  .footer-note { font-size: 0.75rem; }
+  .footer-logo { height: 40px; width: auto; display: block; }
+  .footer-legal { border-top: 1px solid var(--colour-border); }
+  .footer-legal .wrap { padding-top: 16px; padding-bottom: 16px; font-size: 0.75rem; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; }
+  .footer-legal p { margin: 0; }
 </style>
 </head>
 <body>
 <header class="site-header">
-  <div class="header-inner">
-    <a class="brand" href="https://www.andykemp.com" aria-label="Andy Kemp Consulting home">
-      <img class="logo logo--light" src="/assets/akc-logo-light.png" alt="Andy Kemp Consulting" width="475" height="182">
-      <img class="logo logo--dark" src="/assets/akc-logo-dark.png" alt="Andy Kemp Consulting" width="475" height="182">
-    </a>
-    <span class="product">AVD Deploy</span>
-    <div class="header-actions">
-      <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch light or dark theme">◐</button>
-      <div id="user-button"></div>
+  <div class="wrap">
+    <div class="brand">
+      <a href="https://www.andykemp.com" aria-label="Andy Kemp Consulting home"><img class="logo" src="/assets/akc-logo-light.png" alt="Andy Kemp Consulting" width="475" height="182"></a>
+      <span class="subtitle">AVD Deploy</span>
     </div>
+    <div id="user-button"></div>
   </div>
 </header>
 <main>
-  <p class="eyebrow">AVD Deploy</p>
-  <h1>Sign-in check</h1>
-  <p class="lead">Confirms this site uses the shared andykemp.com account and that your session carries the AVD permissions.</p>
-  <section class="card" id="status"><h2>Status</h2><p id="message">Loading…</p><div id="sign-in"></div></section>
-  <section class="card" id="checks" hidden><h2>Checks</h2><table><tbody id="check-rows"></tbody></table><div id="org-switcher"></div></section>
-  <section class="card" id="claims" hidden><h2>Session token claims</h2><p>Decoded in your browser for checking only. The real API verifies the signature.</p><pre id="claims-json"></pre></section>
+  <div class="sign-in-page" id="sign-in-page"><div id="sign-in"><p id="message">Loading…</p></div></div>
+  <div class="checks-page" id="checks-page" hidden>
+    <div class="wrap" style="max-width: 960px">
+      <p class="eyebrow">AVD Deploy</p>
+      <h1>Sign-in check</h1>
+      <p class="lead">Confirms this site uses the shared andykemp.com account and shows the organisation AVD Deploy will use.</p>
+      <section class="card"><h2>Checks</h2><table><tbody id="check-rows"></tbody></table><div id="org-switcher"></div></section>
+      <section class="card"><h2>Session token claims</h2><p>Decoded in your browser for checking only. The real API verifies the signature.</p><pre id="claims-json"></pre></section>
+    </div>
+  </div>
 </main>
+<footer class="site-footer">
+  <div class="wrap footer-grid">
+    <div>
+      <img class="footer-logo" src="/assets/akc-logo-footer.png" alt="Andy Kemp Consulting" width="240" height="80">
+      <p>Microsoft 365 Security, Identity &amp; Tenant Migration Specialist</p>
+      <p class="footer-note">Deploys into your own Azure subscription. Your desktops, data and passwords stay in your tenant.</p>
+    </div>
+    <div>
+      <h2>Andy Kemp Consulting</h2>
+      <ul>
+        <li><a href="https://www.andykemp.com/services/">Services</a></li>
+        <li><a href="https://tools.andykemp.com/">Free Tools</a></li>
+        <li><a href="https://www.andykemp.com/blog/">Blog</a></li>
+        <li><a href="https://www.andykemp.com/about/">About</a></li>
+        <li><a href="https://www.andykemp.com/privacy/">Privacy</a></li>
+      </ul>
+    </div>
+    <div>
+      <h2>Get in Touch</h2>
+      <ul>
+        <li><a href="mailto:hello@andykemp.com">hello@andykemp.com</a></li>
+        <li><a href="tel:+441313761802">+44 131 376 1802</a></li>
+        <li><a href="https://www.andykemp.com/book-discovery-call/">Book a discovery call</a></li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer-legal">
+    <div class="wrap">
+      <p>&copy; <span id="year">2026</span> Andy Kemp Consulting Ltd. All rights reserved.</p>
+      <p>Registered in Scotland &middot; Company No. SC878818 &middot; VAT No. GB513227917</p>
+    </div>
+  </div>
+</footer>
 <script>
   // The publishable key is public (it is in every Clerk front end).
   const PUBLISHABLE_KEY = 'pk_live_Y2xlcmsuYW5keWtlbXAuY29tJA';
   const EXPECTED_ISSUER_HOST = 'clerk.andykemp.com';
 
   const el = (id) => document.getElementById(id);
-  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-
-  el('theme-toggle').addEventListener('click', () => {
-    const dark = document.documentElement.dataset.theme !== 'dark';
-    try { localStorage.setItem('akc-theme', dark ? 'dark' : 'light'); } catch (e) { /* not stored */ }
-    location.reload(); // Clerk's components take their colours at load.
-  });
-
-  // Clerk components in the AKC palette, read from the CSS tokens so light and dark both match.
-  function clerkAppearance() {
-    return {
-      variables: {
-        colorPrimary: css('--colour-copper-strong'),
-        colorForeground: css('--colour-white'),
-        colorText: css('--colour-white'),
-        colorMutedForeground: css('--colour-muted'),
-        colorTextSecondary: css('--colour-muted'),
-        colorBackground: css('--colour-panel'),
-        colorInput: css('--colour-panel'),
-        colorInputBackground: css('--colour-panel'),
-        colorInputForeground: css('--colour-text'),
-        colorInputText: css('--colour-text'),
-        colorNeutral: css('--colour-text'),
-        colorDanger: css('--colour-danger'),
-        colorSuccess: css('--colour-success'),
-        fontFamily: css('--font-sans'),
-        borderRadius: '8px',
-      },
-    };
-  }
+  el('year').textContent = new Date().getFullYear();
 
   function frontendApiFromKey(key) {
     // A publishable key is pk_live_ + base64("<frontend api host>$").
@@ -176,22 +174,23 @@
     const fapi = frontendApiFromKey(PUBLISHABLE_KEY);
     await loadScript(`https://${fapi}/npm/@clerk/ui@1/dist/ui.browser.js`);
     await loadScript(`https://${fapi}/npm/@clerk/clerk-js@6/dist/clerk.browser.js`, { 'data-clerk-publishable-key': PUBLISHABLE_KEY });
-    await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor }, appearance: clerkAppearance() });
+    // Clerk's default appearance, as on the audit tool, so every andykemp.com sign-in looks the same.
+    await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor } });
     const clerk = window.Clerk;
 
     if (!clerk.isSignedIn) {
-      el('message').textContent = 'Not signed in here. If you are already signed in on another andykemp.com site, the session is not being shared.';
-      clerk.mountSignIn(el('sign-in'));
+      el('sign-in').replaceChildren();
+      // Sign in and sign up in the same box, returning here afterwards.
+      clerk.mountSignIn(el('sign-in'), { withSignUp: true, fallbackRedirectUrl: location.href });
       return;
     }
 
+    el('sign-in-page').hidden = true;
+    el('checks-page').hidden = false;
     clerk.mountUserButton(el('user-button'));
-    el('message').textContent = 'Signed in.';
-    el('checks').hidden = false;
 
     const token = await clerk.session.getToken();
     const claims = decodeJwt(token);
-    el('claims').hidden = false;
     el('claims-json').textContent = JSON.stringify(claims, null, 2);
 
     const user = clerk.user;
