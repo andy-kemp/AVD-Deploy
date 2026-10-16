@@ -6,7 +6,7 @@ Andy Kemp Consulting (AKC) hosts the portal. A customer signs up, connects their
 
 ## Customer journey
 
-1. **Sign up** at `avd.andykemp.com`, or just sign in with an existing andykemp.com account (the same Clerk instance as AKC's other apps). Create or choose an organisation, enable AVD for it, and invite colleagues as reader, operator, approver or admin.
+1. **Sign up** at `avd-deploy.andykemp.com`, or just sign in with an existing andykemp.com account (the same Clerk instance as AKC's other apps). Create or choose an organisation, enable AVD for it, and invite colleagues as reader, operator, approver or admin.
 2. **Connect tenant** (organisation admin, once). A customer Global Administrator or Cloud Application Administrator approves the "AKC AVD Deploy" app on the admin consent page. The portal records the tenant against the organisation.
 3. **Link Microsoft account** (each operator, once). Sign in with your own work account in that tenant.
 4. **Onboard a subscription** (someone with Owner on it, once per subscription). The portal shows exactly what it will do, then, as that person:
@@ -25,7 +25,8 @@ Andy Kemp Consulting (AKC) hosts the portal. A customer signs up, connects their
 
 ```mermaid
 flowchart LR
-    User[Customer user] --> Web[Portal + API<br/>Azure Container Apps]
+    User[Customer user] --> SWA[Front end<br/>Static Web Apps Standard<br/>avd-deploy.andykemp.com]
+    SWA -->|/api, linked backend| Web[API<br/>Azure Container Apps]
     Web --> Clerk[Clerk<br/>accounts, orgs, roles]
     Web --> Entra[Customer Entra tenant<br/>consent + delegated tokens]
     Web --> State[(Table Storage<br/>orgs, tenants, configs,<br/>plans, approvals, jobs)]
@@ -39,9 +40,10 @@ flowchart LR
 
 | Component | Choice | Notes |
 | --- | --- | --- |
-| Portal and API | One TypeScript app (Node) on Azure Container Apps, same origin | Clerk and MSAL Node SDKs are first-class. Short requests only; anything over a few seconds becomes a job. Reuses the layout and API shapes of `web/index.html`. |
+| Front end | Azure Static Web Apps **Standard** (already created) | Static TypeScript/React build with Clerk's front-end SDK. Reuses the layout of `web/index.html`. |
+| API | TypeScript (Node) on Azure Container Apps, linked to the Static Web App as its backend so `/api` is same-origin | Standard plan required for linking. The API validates the Clerk bearer token itself; it never trusts Static Web Apps identity headers. Linked APIs have a 45-second request limit, so anything longer becomes a job. Clerk and MSAL Node SDKs are first-class. |
 | Accounts | The existing andykemp.com Clerk production instance, with organisations and AVD-specific permissions (`org:avd:*`) | Tokens verified with `authorizedParties` pinned to the AVD origin. [ADR 0018](adr/0018-accounts-and-tenant-connection.md) |
-| Domain | `avd.andykemp.com` (working name) on an Azure Container Apps custom domain with a free managed certificate | DNS: `CNAME` to the container app and `asuid` `TXT`; DNS-only if the zone is on Cloudflare. If the zone has a CAA record, allow `digicert.com`. |
+| Domain | `avd-deploy.andykemp.com` on the Static Web App custom domain with its free managed certificate | DNS: one `CNAME` to the Static Web App's `*.azurestaticapps.net` address, DNS-only in Cloudflare. If the zone has a CAA record, allow `digicert.com`. The API's Container Apps address is not published as a custom domain. |
 | Tenant connection | Multi-tenant Entra app in AKC's tenant, confidential client, publisher-verified | Admin consent once per tenant; per-operator account link |
 | Jobs | Azure Storage Queue + Container Apps Jobs (event-driven) | Kept from [ADR 0004](adr/0004-hosting-and-workers.md). Two fixed job definitions: `engine-app` (runs as the AKC app) and `engine-delegated` (runs with the operator's token). No per-job image or command overrides. |
 | Worker identity | User-assigned managed identity, used as a federated credential on the multi-tenant app | No secrets. Only the `engine-app` job has it. |

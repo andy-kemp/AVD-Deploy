@@ -30,7 +30,7 @@ Use two layers.
 
 AKC already runs other apps on andykemp.com with one Clerk production instance. The AVD portal joins that instance rather than creating a new one, so people already signed in to another andykemp.com app are signed in here too. Because the instance is shared:
 
-- **Pin the token to this app.** The API passes `authorizedParties: ['https://avd.andykemp.com']` to Clerk's `verifyToken` (it checks the token's `azp`). A session token minted for another andykemp.com app is rejected by the AVD API.
+- **Pin the token to this app.** The API passes `authorizedParties: ['https://avd-deploy.andykemp.com']` to Clerk's `verifyToken` (it checks the token's `azp`). A session token minted for another andykemp.com app is rejected by the AVD API.
 - **Use AVD-specific permissions, not shared role names.** Organisation roles and permissions are instance-wide, so a generic `org:admin` from another app must not mean anything here. Define custom permissions `org:avd:read`, `org:avd:operate`, `org:avd:approve` and `org:avd:admin`, attach them to roles, and have the API check permissions only. The role table above describes which permissions each AVD role carries.
 - **Opt in per organisation.** A Clerk organisation created for another app is not an AVD customer until an organisation admin enables AVD (an AVD organisation record in the control-plane store). Membership alone grants nothing.
 - **Keep AVD data out of Clerk metadata.** Tenant IDs, connections and token references live only in the AVD control-plane store, never in Clerk user or organisation metadata that other apps on the instance can read.
@@ -47,7 +47,7 @@ AKC already runs other apps on andykemp.com with one Clerk production instance. 
 
 ## Consequences
 
-- Customers see one enterprise application with a verified publisher (AKC must complete Microsoft publisher verification, with andykemp.com as the publisher domain). Its redirect URIs are on `avd.andykemp.com` only.
+- Customers see one enterprise application with a verified publisher (AKC must complete Microsoft publisher verification, with andykemp.com as the publisher domain). Its redirect URIs are on `avd-deploy.andykemp.com` only.
 - A security problem in another andykemp.com app sharing the Clerk instance can expose that app's sessions, but not the AVD API's, as long as the `azp` and permission checks hold. Those checks are release gates.
 - Refresh tokens are sensitive. They are encrypted with a key in AKC's Key Vault, scoped per user and tenant, and deleted when the user unlinks, leaves the organisation or the tenant is disconnected.
 - If a customer's Conditional Access blocks the app or requires a compliant device, delegated steps fail and are shown as a "reconnect" or manual task, never retried with another identity.
