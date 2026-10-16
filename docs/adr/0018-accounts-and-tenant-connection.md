@@ -17,14 +17,24 @@ Use two layers.
 - Clerk handles sign-up, sign-in, MFA and sessions. "Sign in with Microsoft" is allowed as a Clerk login method, but it only proves who the person is.
 - A **Clerk organisation** is a customer. Organisation roles replace the `Portal.*` app roles of ADR 0003:
 
-  | Clerk role | Can |
-  | --- | --- |
-  | `org:reader` | View estates, plans and job history |
-  | `org:operator` | Run discovery, create configurations and previews, submit plans |
-  | `org:approver` | Approve plans (not their own, where the organisation requires independent approval) |
-  | `org:admin` | Connect or disconnect tenants, manage members and approval policy |
+  | AVD role | Clerk permissions | Can |
+  | --- | --- | --- |
+  | Reader | `org:avd:read` | View estates, plans and job history |
+  | Operator | `org:avd:read`, `org:avd:operate` | Run discovery, create configurations and previews, submit plans |
+  | Approver | `org:avd:read`, `org:avd:approve` | Approve plans (not their own, where the organisation requires independent approval) |
+  | Admin | all four, including `org:avd:admin` | Enable AVD for the organisation, connect or disconnect tenants, manage approval policy |
 
 - The API verifies the Clerk session token (signature, issuer, expiry, organisation and role) on every request. Clerk roles grant portal actions only; they never grant Azure or Graph rights.
+
+### Reusing the existing andykemp.com Clerk instance
+
+AKC already runs other apps on andykemp.com with one Clerk production instance. The AVD portal joins that instance rather than creating a new one, so people already signed in to another andykemp.com app are signed in here too. Because the instance is shared:
+
+- **Pin the token to this app.** The API passes `authorizedParties: ['https://avd.andykemp.com']` to Clerk's `verifyToken` (it checks the token's `azp`). A session token minted for another andykemp.com app is rejected by the AVD API.
+- **Use AVD-specific permissions, not shared role names.** Organisation roles and permissions are instance-wide, so a generic `org:admin` from another app must not mean anything here. Define custom permissions `org:avd:read`, `org:avd:operate`, `org:avd:approve` and `org:avd:admin`, attach them to roles, and have the API check permissions only. The role table above describes which permissions each AVD role carries.
+- **Opt in per organisation.** A Clerk organisation created for another app is not an AVD customer until an organisation admin enables AVD (an AVD organisation record in the control-plane store). Membership alone grants nothing.
+- **Keep AVD data out of Clerk metadata.** Tenant IDs, connections and token references live only in the AVD control-plane store, never in Clerk user or organisation metadata that other apps on the instance can read.
+- **Shared sign-in policy.** MFA, social connections and session lifetime are instance settings shared with the other apps. Require MFA for any member holding `org:avd:approve` or `org:avd:admin`; if the instance can't enforce that per permission, re-check a recent second factor (Clerk step-up/reverification) before approval and tenant connection.
 
 ### 2. Tenant connection: AKC's multi-tenant Entra app
 
@@ -37,7 +47,8 @@ Use two layers.
 
 ## Consequences
 
-- Customers see one enterprise application with a verified publisher (AKC must complete Microsoft publisher verification).
+- Customers see one enterprise application with a verified publisher (AKC must complete Microsoft publisher verification, with andykemp.com as the publisher domain). Its redirect URIs are on `avd.andykemp.com` only.
+- A security problem in another andykemp.com app sharing the Clerk instance can expose that app's sessions, but not the AVD API's, as long as the `azp` and permission checks hold. Those checks are release gates.
 - Refresh tokens are sensitive. They are encrypted with a key in AKC's Key Vault, scoped per user and tenant, and deleted when the user unlinks, leaves the organisation or the tenant is disconnected.
 - If a customer's Conditional Access blocks the app or requires a compliant device, delegated steps fail and are shown as a "reconnect" or manual task, never retried with another identity.
 - A customer can revoke everything by deleting the enterprise application in their tenant.

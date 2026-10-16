@@ -6,7 +6,7 @@ Andy Kemp Consulting (AKC) hosts the portal. A customer signs up, connects their
 
 ## Customer journey
 
-1. **Sign up.** Create an account and an organisation (Clerk). Invite colleagues as reader, operator, approver or admin.
+1. **Sign up** at `avd.andykemp.com`, or just sign in with an existing andykemp.com account (the same Clerk instance as AKC's other apps). Create or choose an organisation, enable AVD for it, and invite colleagues as reader, operator, approver or admin.
 2. **Connect tenant** (organisation admin, once). A customer Global Administrator or Cloud Application Administrator approves the "AKC AVD Deploy" app on the admin consent page. The portal records the tenant against the organisation.
 3. **Link Microsoft account** (each operator, once). Sign in with your own work account in that tenant.
 4. **Onboard a subscription** (someone with Owner on it, once per subscription). The portal shows exactly what it will do, then, as that person:
@@ -40,7 +40,8 @@ flowchart LR
 | Component | Choice | Notes |
 | --- | --- | --- |
 | Portal and API | One TypeScript app (Node) on Azure Container Apps, same origin | Clerk and MSAL Node SDKs are first-class. Short requests only; anything over a few seconds becomes a job. Reuses the layout and API shapes of `web/index.html`. |
-| Accounts | Clerk, with organisations and custom roles | [ADR 0018](adr/0018-accounts-and-tenant-connection.md) |
+| Accounts | The existing andykemp.com Clerk production instance, with organisations and AVD-specific permissions (`org:avd:*`) | Tokens verified with `authorizedParties` pinned to the AVD origin. [ADR 0018](adr/0018-accounts-and-tenant-connection.md) |
+| Domain | `avd.andykemp.com` (working name) on an Azure Container Apps custom domain with a free managed certificate | DNS: `CNAME` to the container app and `asuid` `TXT`; DNS-only if the zone is on Cloudflare. If the zone has a CAA record, allow `digicert.com`. |
 | Tenant connection | Multi-tenant Entra app in AKC's tenant, confidential client, publisher-verified | Admin consent once per tenant; per-operator account link |
 | Jobs | Azure Storage Queue + Container Apps Jobs (event-driven) | Kept from [ADR 0004](adr/0004-hosting-and-workers.md). Two fixed job definitions: `engine-app` (runs as the AKC app) and `engine-delegated` (runs with the operator's token). No per-job image or command overrides. |
 | Worker identity | User-assigned managed identity, used as a federated credential on the multi-tenant app | No secrets. Only the `engine-app` job has it. |
