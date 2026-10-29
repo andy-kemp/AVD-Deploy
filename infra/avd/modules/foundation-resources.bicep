@@ -104,6 +104,10 @@ resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = if (createVault) {
       name: 'standard'
     }
     enableRbacAuthorization: true
+    // Lets a session-host deployment read the admin password through an ARM Key Vault reference
+    // (session-hosts-from-vault.bicep), so the browser deployer never handles it after creating it.
+    // Only principals with Microsoft.KeyVault/vaults/deploy/action on this vault can use it.
+    enabledForTemplateDeployment: true
     enableSoftDelete: true
     softDeleteRetentionInDays: 7
     publicNetworkAccess: 'Enabled'
