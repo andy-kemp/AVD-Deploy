@@ -35,16 +35,19 @@ const scripts = {
   'set-profile-acls.ps1': 'scripts/set-profile-acls.ps1',
 };
 
+// Build everything in memory first, so a failed build leaves no half-made folder holding the version number.
+const built = {};
+for (const [name, source] of Object.entries(templates)) built[name] = execFileSync(bicep, ['build', join(root, source), '--stdout'], { encoding: 'utf8' });
+for (const [name, source] of Object.entries(scripts)) built[name] = readFileSync(join(root, source), 'utf8');
+
 mkdirSync(out, { recursive: true });
 const files = {};
-const add = (name, text) => {
+for (const [name, text] of Object.entries(built)) {
   // LF only, so the hash is the same whichever machine built it.
   const bytes = Buffer.from(text.replace(/\r\n/g, '\n'), 'utf8');
   writeFileSync(join(out, name), bytes);
   files[name] = { sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length };
-};
-for (const [name, source] of Object.entries(templates)) add(name, execFileSync(bicep, ['build', join(root, source), '--stdout'], { encoding: 'utf8' }));
-for (const [name, source] of Object.entries(scripts)) add(name, readFileSync(join(root, source), 'utf8'));
+}
 writeFileSync(join(out, 'manifest.json'), `${JSON.stringify({ product: 'avd', version, commit, builtAt: new Date().toISOString(), files }, null, 2)}\n`);
 console.log(`Built AVD ${version} from ${commit.slice(0, 7)} into ${out}`);
 for (const [name, f] of Object.entries(files)) console.log(`  ${name}  ${f.bytes} bytes  ${f.sha256}`);
