@@ -30,6 +30,8 @@ param hostPoolType string = 'Pooled'
 @allowed(['FSLogix', 'Local'])
 param profileMode string = 'FSLogix'
 param preventTempProfile bool = false
+param imageOffer string = 'Windows-11'
+param imageSku string = ''
 
 resource vault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName
@@ -55,6 +57,8 @@ module hosts './session-hosts.bicep' = {
     hostPoolType: hostPoolType
     profileMode: profileMode
     preventTempProfile: preventTempProfile
+    imageOffer: imageOffer
+    imageSku: imageSku
   }
 }
 

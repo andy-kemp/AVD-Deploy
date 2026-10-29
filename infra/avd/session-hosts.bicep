@@ -30,9 +30,14 @@ param dns1 string = ''
 param dns2 string = ''
 @description('Reviewed, immutable HTTPS session host preparation script URI.')
 param sessionHostPrepScriptUrl string
-@description('Existing host pool type; selects the multi-session (Pooled) or single-session (Personal) Windows 11 image.')
+
+@description('Existing host pool type; selects the multi-session (Pooled) or single-session (Personal) Windows 11 image.')
 @allowed(['Pooled', 'Personal'])
 param hostPoolType string = 'Pooled'
+@description('Marketplace image offer. Windows-11 is plain Windows 11; office-365 adds Microsoft 365 Apps (multi-session SKUs only).')
+param imageOffer string = 'Windows-11'
+@description('Marketplace image SKU; empty for the Windows 11 24H2 default that matches hostPoolType.')
+param imageSku string = ''
 @description('FSLogix configures profile containers on Azure Files; Local keeps profiles on the VM (dedicated hosts).')
 @allowed(['FSLogix', 'Local'])
 param profileMode string = 'FSLogix'
@@ -104,8 +109,8 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = [for i in range(0, 
     storageProfile: {
       imageReference: {
         publisher: 'MicrosoftWindowsDesktop'
-        offer: 'Windows-11'
-        sku: hostPoolType == 'Personal' ? 'win11-24h2-ent' : 'win11-24h2-avd'
+        offer: imageOffer
+        sku: !empty(imageSku) ? imageSku : (hostPoolType == 'Personal' ? 'win11-24h2-ent' : 'win11-24h2-avd')
         version: 'latest'
       }
       osDisk: {
